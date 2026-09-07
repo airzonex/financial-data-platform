@@ -25,6 +25,13 @@ x-airflow-common: &airflow-common
     PYTHONPATH: /opt/airflow:/opt/airflow/src
     PYTHONUNBUFFERED: "1"
 
+    DBT_HOST: postgres
+    DBT_PORT: "5432"
+    DBT_USER: ${POSTGRES_USER}
+    DBT_PASSWORD: ${POSTGRES_PASSWORD}
+    DBT_DBNAME: ${POSTGRES_DB}
+    DBT_PROFILES_DIR: /opt/airflow/dbt/financial_data
+
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
