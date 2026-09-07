@@ -4,7 +4,7 @@ import subprocess
 
 from airflow.sdk import dag, task
 
-from financial_data.metadata_repo import MetadataRepository, PipelineInfo
+from financial_data.metadata_repo import MetadataRepository, PipelineInfo, DatasetRunInfo
 from financial_data.ingestion import CbrKeyrateIngestion, MoexRgbiIngestion, IngestionMetrics
 from financial_data.sources import CbrClient, MoexClient
 from financial_data.storage import MinioStorage
@@ -19,25 +19,19 @@ RGBI_URL = 'https://iss.moex.com/iss/history/engines/stock/markets/index/securit
 KEYRATE_DATASET = 'keyrate'
 KEYRATE_URL = 'https://www.cbr.ru/hd_base/KeyRate'
 
-PG_CONN_STR = 'postgresql://airflow:airflow@localhost:5433/airflow'
+PG_CONN_STR = 'postgresql://airflow:airflow@postgres:5432/airflow'
 
-MINIO_ENDPOINT = 'localhost:9000'
+MINIO_ENDPOINT = 'minio:9000'
 MINIO_USER = 'minioadmin'
 MINIO_PASS = 'minioadmin'
 MINIO_RAW_BUCKET = 'raw'
 
 
-@dataclass
-class DatasetRunInfo:
-    run_id: int
-    requested_start: date
-    dataset: str
-
-
 @dag(
     dag_id='financial_data',
     start_date=datetime(2026, 1, 1),
-    dchedule='@daily',
+    #schedule='@daily',
+    schedule=None,
     catchup=False
 )
 def financial_data_dag():
@@ -49,13 +43,13 @@ def financial_data_dag():
         return repo.create_pipeline_run(PIPELINE_NAME)
 
     @task
-    def prepare_rgbi_run(pipeline_run_id: int) -> DatasetRunInfo:
+    def prepare_rgbi_run(pipeline_info: PipelineInfo) -> DatasetRunInfo:
         repo = MetadataRepository(PG_CONN_STR)
         
         requested_start = repo.determine_date_start(dataset=RGBI_DATASET)
 
         run_id = repo.create_dataset_run(
-            pipeline_run_id=pipeline_run_id,
+            pipeline_run_id=pipeline_info.pipeline_run_id,
             dataset=RGBI_DATASET,
             requested_start=requested_start
         )
@@ -63,13 +57,13 @@ def financial_data_dag():
         return DatasetRunInfo(run_id, requested_start, RGBI_DATASET)
 
     @task
-    def prepare_keyrate_run(pipeline_run_id: int) -> DatasetRunInfo:
+    def prepare_keyrate_run(pipeline_info: PipelineInfo) -> DatasetRunInfo:
         repo = MetadataRepository(PG_CONN_STR)
 
         requested_start = repo.determine_date_start(dataset=KEYRATE_DATASET)
 
         run_id = repo.create_dataset_run(
-            pipeline_run_id=pipeline_run_id,
+            pipeline_run_id=pipeline_info.pipeline_run_id,
             dataset=KEYRATE_DATASET,
             requested_start=requested_start
         )
@@ -345,8 +339,8 @@ def financial_data_dag():
 
     pipeline: PipelineInfo = create_pipeline_run()
 
-    rgbi_run: DatasetRunInfo = prepare_rgbi_run(pipeline.pipeline_run_id)
-    keyrate_run: DatasetRunInfo = prepare_keyrate_run(pipeline.pipeline_run_id)
+    rgbi_run: DatasetRunInfo = prepare_rgbi_run(pipeline)
+    keyrate_run: DatasetRunInfo = prepare_keyrate_run(pipeline)
 
     rgbi_ingest: IngestionMetrics = rgbi_ingestion(pipeline_info=pipeline, dataset_run_info=rgbi_run)
     keyrate_ingest: IngestionMetrics = keyrate_ingestion(
@@ -376,4 +370,4 @@ def financial_data_dag():
     finish_runs >> finish_pipeline
 
 
-financial_data_dag()
+dag = financial_data_dag()

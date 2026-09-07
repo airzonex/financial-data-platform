@@ -21,6 +21,12 @@ class StepsStatus:
     status: str
     error: str
 
+@dataclass
+class DatasetRunInfo:
+    run_id: int
+    requested_start: date
+    dataset: str
+
 
 class MetadataRepository:
 

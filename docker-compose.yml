@@ -1,3 +1,42 @@
+# =============================================================================
+# Common Airflow Environment Anchor
+# =============================================================================
+x-airflow-common: &airflow-common
+  build: .
+  image: financial-airflow-dev:latest
+  user: "${AIRFLOW_UID}:0"
+  restart: unless-stopped
+  environment:
+    TZ: ${TZ}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
+      ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_PASSWORD}
+    AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: "financial_data.* financial_data.*.*"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution"
+
+    # Единые ключи шифрования и подписи JWT (Airflow 3)
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET_KEY}
+    
+    PYTHONPATH: /opt/airflow:/opt/airflow/src
+    PYTHONUNBUFFERED: "1"
+
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./airflow/config:/opt/airflow/config
+    - ./src:/opt/airflow/src
+    - ./dbt:/opt/airflow/dbt
+
+  networks:
+    - financial
+
+
 services:
 
   # ===========================================================================
@@ -37,146 +76,59 @@ services:
 
 
   # ===========================================================================
-  # Airflow initialization
+  # Airflow
   # ===========================================================================
 
   airflow-init:
-    image: apache/airflow:3.3.1-python3.12
+    <<: *airflow-common
     container_name: financial-airflow-init
-
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
-
-    environment:
-      TZ: ${TZ}
-
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-        postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
-        ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
-
-    user: "${AIRFLOW_UID}:0"
-
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./airflow/config:/opt/airflow/config
-
     command:
       - airflow
       - db
       - migrate
 
-    networks:
-      - financial
-
-
-  # ===========================================================================
-  # Airflow API server
-  # ===========================================================================
-
   airflow-api-server:
-    image: apache/airflow:3.3.1-python3.12
+    <<: *airflow-common
     container_name: financial-airflow-api-server
-    restart: unless-stopped
-
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-
-    environment:
-      TZ: ${TZ}
-
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-        postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
-        ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
-
-    user: "${AIRFLOW_UID}:0"
-
     ports:
       - "${AIRFLOW_PORT}:8080"
-
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./airflow/config:/opt/airflow/config
-
     command:
       - airflow
       - api-server
       - --port
       - "8080"
-
     healthcheck:
-      test:
-        [
-          "CMD",
-          "curl",
-          "--fail",
-          "http://localhost:8080/api/v2/monitor/health"
-        ]
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 10s
       timeout: 10s
       retries: 10
 
-    networks:
-      - financial
-
-
-  # ===========================================================================
-  # Airflow scheduler
-  # ===========================================================================
-
   airflow-scheduler:
-    image: apache/airflow:3.3.1-python3.12
+    <<: *airflow-common
     container_name: financial-airflow-scheduler
-    restart: unless-stopped
-
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-
-    environment:
-      TZ: ${TZ}
-
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-        postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
-        ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
-
-    user: "${AIRFLOW_UID}:0"
-
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./airflow/config:/opt/airflow/config
-
     command:
       - airflow
       - scheduler
 
-    networks:
-      - financial
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: financial-airflow-dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command:
+      - airflow
+      - dag-processor
 
 
   # ===========================================================================

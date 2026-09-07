@@ -1,0 +1,321 @@
+services:
+
+  # ===========================================================================
+  # PostgreSQL
+  # ===========================================================================
+
+  postgres:
+    image: postgres:17
+    container_name: financial-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ}
+
+    ports:
+      - "${POSTGRES_HOST_PORT}:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - financial
+
+
+  # ===========================================================================
+  # Airflow initialization
+  # ===========================================================================
+
+  airflow-init:
+    build: .
+    image: financial-airflow-dev:latest
+    container_name: financial-airflow-init
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      TZ: ${TZ}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
+        ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
+      # Разрешаем десериализацию любых классов из пакета financial_data
+      AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: "financial_data.* financial_data.*.*"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      AIRFLOW__CORE__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      PYTHONPATH: /opt/airflow:/opt/airflow/src
+      PYTHONUNBUFFERED: "1"
+
+    user: "${AIRFLOW_UID}:0"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/config:/opt/airflow/config
+      - ./src:/opt/airflow/src
+      - ./dbt:/opt/airflow/dbt
+
+    command:
+      - airflow
+      - db
+      - migrate
+
+    networks:
+      - financial
+
+
+  # ===========================================================================
+  # Airflow API server
+  # ===========================================================================
+
+  airflow-api-server:
+    build: .
+    image: financial-airflow-dev:latest
+    container_name: financial-airflow-api-server
+    restart: unless-stopped
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+    environment:
+      TZ: ${TZ}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
+        ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
+      # Разрешаем десериализацию любых классов из пакета financial_data
+      AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: "financial_data.* financial_data.*.*"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      AIRFLOW__CORE__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      PYTHONPATH: /opt/airflow:/opt/airflow/src
+      PYTHONUNBUFFERED: "1"
+
+    user: "${AIRFLOW_UID}:0"
+
+    ports:
+      - "${AIRFLOW_PORT}:8080"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/config:/opt/airflow/config
+      - ./src:/opt/airflow/src
+      - ./dbt:/opt/airflow/dbt
+
+    command:
+      - airflow
+      - api-server
+      - --port
+      - "8080"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "http://localhost:8080/api/v2/monitor/health"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+    networks:
+      - financial
+
+
+  # ===========================================================================
+  # Airflow scheduler
+  # ===========================================================================
+
+  airflow-scheduler:
+    build: .
+    image: financial-airflow-dev:latest
+    container_name: financial-airflow-scheduler
+    restart: unless-stopped
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+    environment:
+      TZ: ${TZ}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: >-
+        ${AIRFLOW_ADMIN_USERNAME}:${AIRFLOW_ADMIN_ROLE}
+      # Разрешаем десериализацию любых классов из пакета financial_data
+      AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: "financial_data.* financial_data.*.*"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      AIRFLOW__CORE__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      PYTHONPATH: /opt/airflow:/opt/airflow/src
+      PYTHONUNBUFFERED: "1"
+
+    user: "${AIRFLOW_UID}:0"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/config:/opt/airflow/config
+      - ./src:/opt/airflow/src
+      - ./dbt:/opt/airflow/dbt
+
+    command:
+      - airflow
+      - scheduler
+
+    networks:
+      - financial
+
+
+  # ===========================================================================
+  # Airflow processor
+  # ===========================================================================
+
+  airflow-dag-processor:
+    image: financial-airflow-dev:latest
+    container_name: financial-airflow-dag-processor
+    command: dag-processor
+    
+    environment:
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Разрешаем десериализацию любых классов из пакета financial_data
+      AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: "financial_data.* financial_data.*.*"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      AIRFLOW__CORE__SECRET_KEY: "98a7bdfef25964d7cea95178d7277f36b17a84da20e40638d9af22c6f7cc34cf"
+      PYTHONPATH: /opt/airflow:/opt/airflow/src
+      PYTHONUNBUFFERED: "1"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt:/opt/airflow/dbt
+    
+    depends_on:
+      - postgres
+
+    networks:
+      - financial
+
+
+  # ===========================================================================
+  # MinIO
+  # ===========================================================================
+
+  minio:
+    image: minio/minio:latest
+    container_name: financial-minio
+    restart: unless-stopped
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+
+    volumes:
+      - minio_data:/data
+
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mc",
+          "ready",
+          "local"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - financial
+
+
+  # ===========================================================================
+  # MinIO initialization
+  # ===========================================================================
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: financial-minio-init
+
+    depends_on:
+      minio:
+        condition: service_healthy
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    volumes:
+      - ./minio/init:/init:ro
+
+    entrypoint:
+      - /bin/sh
+      - /init/create-buckets.sh
+
+    networks:
+      - financial
+
+
+# =============================================================================
+# Volumes
+# =============================================================================
+
+volumes:
+
+  postgres_data:
+    name: financial-postgres-data
+
+  minio_data:
+    name: financial-minio-data
+
+
+# =============================================================================
+# Network
+# =============================================================================
+
+networks:
+
+  financial:
+    name: financial-network
+    driver: bridge
