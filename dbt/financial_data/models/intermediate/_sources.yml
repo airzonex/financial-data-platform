@@ -1,0 +1,7 @@
+sources:
+  - name: stg
+    schema: stg
+    description: "Staging data schema"
+    tables:
+      - name: rgbi_history
+      - name: keyrate_history

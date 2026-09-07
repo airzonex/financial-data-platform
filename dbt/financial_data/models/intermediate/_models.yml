@@ -1,0 +1,17 @@
+models:
+  - name: rgbi_history
+    description: Intermediate rgbi history from stage (with correct field types and filled date gaps)
+    columns:
+      - name: trade_date
+        description: Trading date
+        data_tests:
+          - unique
+          - not_null
+  - name: keyrate_history
+    description: Intermediate keyrate history (with correct field types and filled date gaps)
+    columns:
+      - name: trade_date
+        description: Trading date
+        data_tests:
+          - unique
+          - not_null
