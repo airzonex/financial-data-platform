@@ -1,8 +1,8 @@
 from datetime import datetime, date
-from dataclasses import dataclass
 import subprocess
 
 from airflow.sdk import dag, task
+import httpx
 
 from financial_data.metadata_repo import MetadataRepository, PipelineInfo, DatasetRunInfo
 from financial_data.ingestion import CbrKeyrateIngestion, MoexRgbiIngestion, IngestionMetrics
@@ -81,31 +81,33 @@ def financial_data_dag():
         )
 
         try:
-            moex_client = MoexClient(
-                base_url=RGBI_URL,
-                date_start=dataset_run_info.requested_start
-            )
-
             storage = MinioStorage(
                 endpoint=MINIO_ENDPOINT,
                 access_key=MINIO_USER,
                 secret_key=MINIO_PASS
             )
 
-            ingestion = MoexRgbiIngestion(
-                client=moex_client,
-                storage=storage,
-                bucket=MINIO_RAW_BUCKET
-            )
+            with httpx.Client(timeout=30.0) as http_client:
+                moex_client = MoexClient(
+                    base_url=RGBI_URL,
+                    date_start=dataset_run_info.requested_start,
+                    http_client=http_client
+                )
 
-            result: IngestionMetrics = ingestion.run(dataset_run_info.run_id, pipeline_info.pipeline_run_date)
+                ingestion = MoexRgbiIngestion(
+                    client=moex_client,
+                    storage=storage,
+                    bucket=MINIO_RAW_BUCKET
+                )
+
+                result: IngestionMetrics = ingestion.run(dataset_run_info.run_id, pipeline_info.pipeline_run_date)
+
+            repo.add_ingestion_metrics(ingestion_result=result)
 
             repo.finish_pipeline_step(
                 step_id=step_id,
                 status='success',
             )
-
-            repo.add_ingestion_metrics(ingestion_result=result)
 
             return result
 
@@ -151,12 +153,12 @@ def financial_data_dag():
                 run_date=pipeline_info.pipeline_run_date
             )
 
+            repo.add_ingestion_metrics(ingestion_result=result)
+
             repo.finish_pipeline_step(
                 step_id=step_id,
                 status='success'
             )
-
-            repo.add_ingestion_metrics(ingestion_result=result)
 
             return result
 

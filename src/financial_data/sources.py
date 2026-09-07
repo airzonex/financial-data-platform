@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, time
 from dataclasses import dataclass
 
 import httpx
@@ -38,9 +38,11 @@ class MoexClient:
         self,
         base_url: str,
         date_start: date,
+        http_client: httpx.Client
     ) -> None:
         self.base_url = base_url
         self.date_start = date_start
+        self.http_client = http_client
 
     def fetch_rgbi_page(
         self,
@@ -55,12 +57,24 @@ class MoexClient:
         if limit is not None:
             params["limit"] = limit
 
-        response = httpx.get(
-            self.base_url,
-            params=params,
-            timeout=30.0
-        )
+        for attempt in range(1, 4):
+            try:
+                response = self.http_client.get(
+                    self.base_url,
+                    params=params
+                )
 
-        response.raise_for_status()
+                response.raise_for_status()
 
-        return MoexPage(raw=response.content, data=response.json())
+                return MoexPage(raw=response.content, data=response.json())
+
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ConnectError,
+                httpx.ReadTimeout,
+                httpx.ConnectTimeout
+            ):
+                if attempt == 3:
+                    raise
+
+                time.sleep(2 ** (attempt - 1))
