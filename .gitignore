@@ -16,3 +16,5 @@ dbt/financial_data/target
 venv/
 
 *.swp
+
+/scripts
