@@ -2,6 +2,7 @@ from datetime import datetime, date
 import subprocess
 
 from airflow.sdk import dag, task
+from airflow.sdk.bases.hook import BaseHook
 import httpx
 
 from financial_data.metadata_repo import MetadataRepository, PipelineInfo, DatasetRunInfo
@@ -10,21 +11,10 @@ from financial_data.sources import CbrClient, MoexClient
 from financial_data.storage import MinioStorage
 from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader, StagingMetrics
 from financial_data.transformation import RgbiWatermarkProvider, KeyrateWatermarkProvider, DatasetRunFinalizer
+from financial_data.config import *
 
-PIPELINE_NAME = 'financial_data'
-
-RGBI_DATASET = 'rgbi'
-RGBI_URL = 'https://iss.moex.com/iss/history/engines/stock/markets/index/securities/RGBI.json'
-
-KEYRATE_DATASET = 'keyrate'
-KEYRATE_URL = 'https://www.cbr.ru/hd_base/KeyRate'
-
-PG_CONN_STR = 'postgresql://airflow:airflow@postgres:5432/airflow'
-
-MINIO_ENDPOINT = 'minio:9000'
-MINIO_USER = 'minioadmin'
-MINIO_PASS = 'minioadmin'
-MINIO_RAW_BUCKET = 'raw'
+POSTGRES_CONN_ID = 'financial_postgres'
+MINIO_CONN_ID = 'financial_minio'
 
 
 @dag(
@@ -36,15 +26,35 @@ MINIO_RAW_BUCKET = 'raw'
 )
 def financial_data_dag():
 
+    def get_metadata_repository() -> MetadataRepository:
+        conn = BaseHook.get_connection(POSTGRES_CONN_ID)
+
+        return MetadataRepository(conn.get_uri())
+
+    def get_db_connection_str() -> str:
+        conn = BaseHook.get_connection(POSTGRES_CONN_ID)
+
+        return conn.get_uri()
+
+    def get_minio_storage() -> MinioStorage:
+        conn = BaseHook.get_connection(MINIO_CONN_ID)
+
+        return MinioStorage(
+            endpoint=conn.host + ':' + str(conn.port),
+            access_key=conn.login,
+            secret_key=conn.password
+        )
+
+
     @task
     def create_pipeline_run() -> PipelineInfo:
-        repo = MetadataRepository(PG_CONN_STR)
 
-        return repo.create_pipeline_run(PIPELINE_NAME)
+        return get_metadata_repository().create_pipeline_run(PIPELINE_NAME)
+
 
     @task
     def prepare_rgbi_run(pipeline_info: PipelineInfo) -> DatasetRunInfo:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
         
         requested_start = repo.determine_date_start(dataset=RGBI_DATASET)
 
@@ -58,7 +68,7 @@ def financial_data_dag():
 
     @task
     def prepare_keyrate_run(pipeline_info: PipelineInfo) -> DatasetRunInfo:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         requested_start = repo.determine_date_start(dataset=KEYRATE_DATASET)
 
@@ -72,7 +82,7 @@ def financial_data_dag():
 
     @task
     def rgbi_ingestion(pipeline_info: PipelineInfo, dataset_run_info: DatasetRunInfo) -> IngestionMetrics:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         step_id = repo.start_pipeline_step(
             pipeline_run_id=pipeline_info.pipeline_run_id,
@@ -81,11 +91,7 @@ def financial_data_dag():
         )
 
         try:
-            storage = MinioStorage(
-                endpoint=MINIO_ENDPOINT,
-                access_key=MINIO_USER,
-                secret_key=MINIO_PASS
-            )
+            storage = get_minio_storage()
 
             with httpx.Client(timeout=30.0) as http_client:
                 moex_client = MoexClient(
@@ -121,7 +127,7 @@ def financial_data_dag():
 
     @task
     def keyrate_ingestion(pipeline_info: PipelineInfo, dataset_run_info: DatasetRunInfo) -> IngestionMetrics:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         step_id = repo.start_pipeline_step(
             pipeline_run_id=pipeline_info.pipeline_run_id,
@@ -136,11 +142,7 @@ def financial_data_dag():
                 date_start=dataset_run_info.requested_start
             )
 
-            storage = MinioStorage(
-                endpoint=MINIO_ENDPOINT,
-                access_key=MINIO_USER,
-                secret_key=MINIO_PASS
-            )
+            storage = get_minio_storage()
 
             ingestion = CbrKeyrateIngestion(
                 client=cbr_client,
@@ -176,7 +178,7 @@ def financial_data_dag():
             dataset_run_info: DatasetRunInfo,
             ingestion_info: IngestionMetrics
         ) -> StagingMetrics:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         step_id = repo.start_pipeline_step(
             pipeline_run_id=pipeline_info.pipeline_run_id,
@@ -185,18 +187,14 @@ def financial_data_dag():
         )
 
         try:
-            storage = MinioStorage(
-                endpoint=MINIO_ENDPOINT,
-                access_key=MINIO_USER,
-                secret_key=MINIO_PASS
-            )
+            storage = get_minio_storage()
 
             loader = RgbiStagingLoader(
                 run_id=dataset_run_info.run_id,
                 storage=storage,
                 bucket=ingestion_info.bucket,
                 prefix=ingestion_info.objects_prefix,
-                db_conn_str=PG_CONN_STR
+                db_conn_str=get_db_connection_str()
             )
 
             result: StagingMetrics = loader.load()
@@ -223,7 +221,7 @@ def financial_data_dag():
     def keyrate_staging(pipeline_info: PipelineInfo, 
                         dataset_run_info: DatasetRunInfo, 
                         ingestion_info: IngestionMetrics) -> StagingMetrics:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         step_id = repo.start_pipeline_step(
             pipeline_run_id=pipeline_info.pipeline_run_id,
@@ -232,18 +230,14 @@ def financial_data_dag():
         )
 
         try:
-            storage = MinioStorage(
-                endpoint=MINIO_ENDPOINT,
-                access_key=MINIO_USER,
-                secret_key=MINIO_PASS
-            )
+            storage = get_minio_storage()
 
             loader = KeyrateStagingLoader(
                 run_id=dataset_run_info.run_id,
                 storage=storage,
                 bucket=ingestion_info.bucket,
                 prefix=ingestion_info.objects_prefix,
-                db_conn_str=PG_CONN_STR
+                db_conn_str=get_db_connection_str()
             )
 
             result: StagingMetrics = loader.load()
@@ -269,7 +263,7 @@ def financial_data_dag():
 
     @task
     def dbt_build(pipeline_info: PipelineInfo) -> None:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         step_id = repo.start_pipeline_step(
             pipeline_run_id=pipeline_info.pipeline_run_id,
@@ -305,17 +299,17 @@ def financial_data_dag():
     @task
     def finish_dataset_runs(rgbi_run: DatasetRunInfo, keyrate_run: DatasetRunInfo) -> None:
 
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         finalizer = DatasetRunFinalizer(
             repository=repo,
             providers={
                 'rgbi': RgbiWatermarkProvider(
-                    connection_str=PG_CONN_STR,
+                    connection_str=get_db_connection_str(),
                     run_id=rgbi_run.run_id
                 ),
                 'keyrate': KeyrateWatermarkProvider(
-                    connection_str=PG_CONN_STR,
+                    connection_str=get_db_connection_str(),
                     run_id=keyrate_run.run_id
                 )
             }
@@ -331,7 +325,7 @@ def financial_data_dag():
 
     @task(trigger_rule='all_done')
     def finish_pipeline_run(pipeline_info: PipelineInfo) -> None:
-        repo = MetadataRepository(PG_CONN_STR)
+        repo = get_metadata_repository()
 
         repo.finish_pipeline_run(pipeline_info.pipeline_run_id)
 
