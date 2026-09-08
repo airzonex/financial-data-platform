@@ -57,26 +57,3 @@ create table if not exists metadata.dataset_runs(
     minio_prefix    text,
     objects_saved   bigint
 );
-
-#create table if not exists metadata.ingestion_runs(
-#	id				bigint generated always as identity primary key,
-#	source			text not null,
-#	dataset			text not null,
-#	requested_start date not null,
-#	actual_min_date date,
-#	actual_max_date date,
-#	started_at		timestamptz not null default now(),
-#	finished_at		timestamptz,
-#	status			text not null check (status in ('running', 'success', 'error')),
-#	records_received integer,
-#	minio_bucket	text,
-#	minio_prefix 	text,
-#	objects_saved	int,
-#	error 			text
-#);
-
-#CREATE INDEX IF NOT EXISTS idx_ingestion_runs_dataset_status
-#    ON metadata.ingestion_runs (dataset, status);
-#
-#CREATE INDEX IF NOT EXISTS idx_ingestion_runs_dataset_actual_max_date
-#    ON metadata.ingestion_runs (dataset, actual_max_date);
