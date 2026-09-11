@@ -196,6 +196,9 @@ class RgbiStagingLoader:
                     close_idx = columns.index(FLD_CLOSE)
                     currency_idx = columns.index(FLD_CURRENCY)
 
+                    if not data:
+                        raise ValueError('history.data is empty')
+
                     rows = [
                         (
                             self.run_id,

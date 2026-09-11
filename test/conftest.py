@@ -1,7 +1,8 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, MagicMock
 
 import pytest
 import httpx
+import psycopg
 
 from financial_data.storage import MinioStorage
 from financial_data.sources import CbrClient, MoexClient
@@ -71,3 +72,15 @@ def moex_page():
         )
 
     return factory
+
+@pytest.fixture
+def db_connection():
+    conn = MagicMock()
+    cursor = MagicMock()
+
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value = cursor
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = None
+
+    return conn, cursor
