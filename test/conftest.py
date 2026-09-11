@@ -3,6 +3,10 @@ from unittest.mock import Mock
 import pytest
 import httpx
 
+from financial_data.storage import MinioStorage
+from financial_data.sources import CbrClient, MoexClient
+from financial_data.ingestion import MoexPage
+
 
 @pytest.fixture
 def cbr_mock_response():
@@ -35,3 +39,35 @@ def moex_mock_response():
 @pytest.fixture
 def http_client():
     return Mock(spec=httpx.Client)
+
+@pytest.fixture
+def storage():
+    return Mock(spec=MinioStorage)
+
+@pytest.fixture
+def cbr_client():
+    return Mock(spec=CbrClient)
+
+@pytest.fixture
+def moex_client():
+    return Mock(spec=MoexClient)
+
+@pytest.fixture
+def moex_page():
+    def factory(
+        *,
+        raw: bytes,
+        index: int,
+        total: int,
+        page_size: int
+    ) -> MoexPage:
+        return MoexPage(
+            raw=raw,
+            data={
+                "history.cursor": {
+                    "data": [[index, total, page_size]]
+                }
+            }
+        )
+
+    return factory

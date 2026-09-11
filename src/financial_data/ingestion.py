@@ -39,7 +39,9 @@ class CbrKeyrateIngestion:
         )
 
     def run(self, run_id: int, run_date: date) -> IngestionMetrics:
-        # CbrClient возвращает одну страницу html
+        """
+        CbrClient возвращает одну страницу html
+        """
         object_prefix = self._get_object_prefix(run_id, run_date)
         object_name = self._get_object_name(object_prefix)
 
