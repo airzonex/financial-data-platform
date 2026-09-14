@@ -2,7 +2,6 @@ from unittest.mock import Mock, MagicMock
 
 import pytest
 import httpx
-import psycopg
 
 from financial_data.storage import MinioStorage
 from financial_data.sources import CbrClient, MoexClient
