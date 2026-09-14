@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Iterator
 
 import psycopg
 import pytest
@@ -11,6 +12,30 @@ from financial_data.staging import StagingMetrics
 
 
 PIPELINE_NAME = 'financial_test'
+
+
+@pytest.fixture(autouse=True)
+def clear_metadata_tables() -> Iterator[None]:
+    """
+    фикстура чистит таблицы из metadata перед и после каждого теста
+    """
+
+    def _truncate_tables():
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    TRUNCATE
+                        metadata.pipeline_steps,
+                        metadata.dataset_runs,
+                        metadata.pipeline_runs
+                    RESTART IDENTITY
+                    """
+                )
+
+    _truncate_tables()
+    yield
+    _truncate_tables()
 
 
 def test_create_pipeline_run(metadata_repo) -> None:
