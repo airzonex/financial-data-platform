@@ -9,4 +9,4 @@ create table stg.keyrate_history(
 	run_id bigint not null,
 	trade_date text,
 	keyrate text
-)
+);
