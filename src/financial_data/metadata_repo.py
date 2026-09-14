@@ -228,6 +228,11 @@ class MetadataRepository:
 
                 steps_status = self.__pipeline_steps_status(pipeline_run_id, cur)
 
+                if steps_status is None:
+                    raise ValueError(
+                        f'Pipeline run {pipeline_run_id} was not finished, no pipeline steps found'
+                    )
+
                 cur.execute(query, (steps_status.status, steps_status.error, pipeline_run_id))
 
                 if cur.rowcount != 1:
