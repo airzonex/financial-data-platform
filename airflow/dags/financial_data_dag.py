@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime
 import subprocess
 
 from airflow.sdk import dag, task
@@ -20,8 +20,7 @@ MINIO_CONN_ID = 'financial_minio'
 @dag(
     dag_id='financial_data',
     start_date=datetime(2026, 1, 1),
-    #schedule='@daily',
-    schedule=None,
+    schedule='@daily',
     catchup=False
 )
 def financial_data_dag():
