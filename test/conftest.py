@@ -49,7 +49,7 @@ def cbr_client():
     return Mock(spec=CbrClient)
 
 @pytest.fixture
-def moex_client():
+def moex_client() -> Mock:
     return Mock(spec=MoexClient)
 
 @pytest.fixture
