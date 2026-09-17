@@ -126,21 +126,65 @@ Tracks state of a specific dataset load, including incremental watermark.
 .
 ├── airflow
 │   └── dags
+│       └── financial_data_dag.py
 ├── dbt
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
 ├── README.md
-└── src
-    └── financial_data
-        ├── config.py
-        ├── ingestion.py
-        ├── metadata_repo.py
-        ├── sources.py
-        ├── staging.py
-        ├── storage.py
-        └── transformation.py
+├── src
+│   ├── financial_data
+│   │   ├── config.py
+│   │   ├── ingestion.py
+│   │   ├── metadata_repo.py
+│   │   ├── sources.py
+│   │   ├── staging.py
+│   │   ├── storage.py
+│   │   └── transformation.py
+└── tests
+    ├── conftest.py
+    ├── e2e
+    │   └── test_end_to_end.py
+    ├── integration
+    │   ├── config.py
+    │   ├── conftest.py
+    │   ├── test_metadata_repo.py
+    │   ├── test_staging_postgres.py
+    │   └── test_storage.py
+    └── unit
+        ├── test_dag_structure.py
+        ├── test_ingestion.py
+        ├── test_sources.py
+        ├── test_staging.py
+        ├── test_transformation.py
+        └── test_utils.py
 ```
+
+## Tests
+
+The project includes unit, integration, and end-to-end tests.
+
+### Run tests locally
+
+Install development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run all tests:
+
+```bash
+pytest
+```
+
+### Test levels
+
+- **Unit tests** — test individual components in isolation using mocks.
+- **Integration tests** — test staging loaders against PostgreSQL and MinIO.
+- **End-to-end tests** — test the complete ingestion → staging → dbt transformation flow using real PostgreSQL and MinIO, while external MOEX/CBR APIs are mocked.
+
+Integration and end-to-end tests require the project's PostgreSQL and MinIO services to be running.
 
 ## Airflow Connections
 
