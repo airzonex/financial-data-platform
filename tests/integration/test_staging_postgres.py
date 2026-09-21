@@ -1,13 +1,11 @@
 import json
-from typing import Iterator
+from collections.abc import Iterator
 
-import pytest
 import psycopg
-
-
+import pytest
 from config import TEST_DB_CONN_STR
-from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader
 
+from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader
 
 BUCKET = 'raw'
 RUN_ID = 123
@@ -22,15 +20,14 @@ def clear_staging_tables() -> Iterator[None]:
     """
 
     def _truncate_tables():
-        with psycopg.connect(TEST_DB_CONN_STR) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     TRUNCATE
                         stg.rgbi_history,
                         stg.keyrate_history
                     """
-                )
+            )
 
     _truncate_tables()
     yield
@@ -77,18 +74,17 @@ def test_keyrate_load_inserts_rows_into_postgres(
     assert result.run_id == RUN_ID
     assert result.records_loaded == 2
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT run_id, trade_date, keyrate
                   FROM stg.keyrate_history
                  WHERE run_id = %s
                  ORDER BY trade_date
                 """,
-                (RUN_ID,)
-            )
-            rows = cur.fetchall()
+            (RUN_ID,)
+        )
+        rows = cur.fetchall()
 
     assert rows == [
         (RUN_ID, '01.09.2026', '15,00'),
@@ -132,17 +128,16 @@ def test_keyrate_load_is_idempotent(
     assert first_result.records_loaded == 1
     assert second_result.records_loaded == 1
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT COUNT(*)
                   FROM stg.keyrate_history
                  WHERE run_id = %s
                 """,
-                (RUN_ID,)
-            )
-            res = cur.fetchone()
+            (RUN_ID,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == 1
 
@@ -155,10 +150,9 @@ def test_keyrate_load_does_not_delete_other_run(
     first_run_id = 100
     second_run_id = 200
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 INSERT INTO stg.keyrate_history(
                     run_id,
                     trade_date,
@@ -166,8 +160,8 @@ def test_keyrate_load_does_not_delete_other_run(
                 )
                 VALUES (%s, %s, %s)
                 """,
-                (first_run_id, '01.09.2026', '15,00')
-            )
+            (first_run_id, '01.09.2026', '15,00')
+        )
 
     object_name = f'{PREFIX_CBR}/part-0000.html'
 
@@ -196,16 +190,15 @@ def test_keyrate_load_does_not_delete_other_run(
 
     loader.load()
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT run_id, trade_date, keyrate
                   FROM stg.keyrate_history
                  ORDER BY run_id
                 """
-            )
-            res = cur.fetchall()
+        )
+        res = cur.fetchall()
 
     assert res == [
         (first_run_id, '01.09.2026', '15,00'),
@@ -248,18 +241,17 @@ def test_rgbi_load_inserts_rows_into_postgres(
     assert result.run_id == RUN_ID
     assert result.records_loaded == 2
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT run_id, trade_date, close, currency_id
                   FROM stg.rgbi_history
                  WHERE run_id = %s
                  ORDER BY trade_date
                 """,
-                (RUN_ID,)
-            )
-            rows = cur.fetchall()
+            (RUN_ID,)
+        )
+        rows = cur.fetchall()
 
     assert rows == [
         (RUN_ID, '2014-01-04', '100.16', 'RUB'),
@@ -302,17 +294,16 @@ def test_rgbi_load_is_idempotent(
     assert first_result.records_loaded == 1
     assert second_result.records_loaded == 1
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT COUNT(*)
                   FROM stg.rgbi_history
                  WHERE run_id = %s
                 """,
-                (RUN_ID,)
-            )
-            res = cur.fetchone()
+            (RUN_ID,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == 1
 
@@ -325,10 +316,9 @@ def test_rgbi_load_does_not_delete_other_run(
     first_run_id = 100
     second_run_id = 200
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 INSERT INTO stg.rgbi_history(
                     run_id,
                     trade_date,
@@ -337,8 +327,8 @@ def test_rgbi_load_does_not_delete_other_run(
                 )
                 VALUES (%s, %s, %s, %s)
                 """,
-                (first_run_id, '2014-01-05', '100', 'RUB')
-            )
+            (first_run_id, '2014-01-05', '100', 'RUB')
+        )
 
     object_name = f'{PREFIX_MOEX}/part-0000.json'
 
@@ -365,16 +355,15 @@ def test_rgbi_load_does_not_delete_other_run(
 
     loader.load()
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT run_id, trade_date, close, currency_id
                   FROM stg.rgbi_history
                  ORDER BY run_id
                 """
-            )
-            res = cur.fetchall()
+        )
+        res = cur.fetchall()
 
     assert res == [
         (first_run_id, '2014-01-05', '100', 'RUB'),
@@ -427,16 +416,15 @@ def test_rgbi_load_does_not_load_rows_if_one_file_is_incorrect(
     with pytest.raises(ValueError):
         loader.load()
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT COUNT(*)
                   FROM stg.rgbi_history
                  WHERE run_id = %s
                 """,
-                (RUN_ID,)
-            )
-            res = cur.fetchone()
+            (RUN_ID,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == 0

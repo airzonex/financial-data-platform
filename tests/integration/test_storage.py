@@ -1,4 +1,5 @@
 from config import MINIO_BUCKET
+
 from financial_data.storage import MinioStorage
 
 

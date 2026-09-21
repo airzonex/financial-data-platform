@@ -1,21 +1,24 @@
-from unittest.mock import Mock
-from typing import Iterator
+import json
 import subprocess
+from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
-import json
+from unittest.mock import Mock
 
-import pytest
 import psycopg
-from minio import Minio
+import pytest
 
-from financial_data.metadata_repo import MetadataRepository
-from financial_data.storage import MinioStorage
 from financial_data.ingestion import CbrKeyrateIngestion, MoexRgbiIngestion
-from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader
-from financial_data.transformation import DatasetRunFinalizer, KeyrateWatermarkProvider, RgbiWatermarkProvider
+from financial_data.metadata_repo import MetadataRepository
 from financial_data.sources import MoexPage
-
+from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader
+from financial_data.storage import MinioStorage
+from financial_data.transformation import (
+    DatasetRunFinalizer,
+    KeyrateWatermarkProvider,
+    RgbiWatermarkProvider,
+)
+from minio import Minio
 
 TEST_DB_CONN_STR = (
     'postgresql://airflow:airflow@localhost:5433/financial_test'
@@ -151,17 +154,16 @@ def cleanup_test_objects(
 def clear_repository() -> Iterator[None]:
 
     def _truncata_tables() -> None:
-        with psycopg.connect(TEST_DB_CONN_STR) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     TRUNCATE
                         metadata.pipeline_steps,
                         metadata.dataset_runs,
                         metadata.pipeline_runs
                     RESTART IDENTITY
                     """
-                )
+            )
 
     _truncata_tables()
     yield
@@ -171,15 +173,14 @@ def clear_repository() -> Iterator[None]:
 def clear_staging() -> Iterator[None]:
 
     def _truncate_tables() -> None:
-        with psycopg.connect(TEST_DB_CONN_STR) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     TRUNCATE
                         stg.rgbi_history,
                         stg.keyrate_history
                     """
-                )
+            )
 
     _truncate_tables()
     yield
@@ -287,16 +288,15 @@ def test_keyrate_pipeline_end_to_end(
 
     e2e_repository.add_staging_metrics(staging_result=stg_metrics)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT run_id, trade_date, keyrate
                   FROM stg.keyrate_history
                  ORDER BY trade_date
                 """
-            )
-            rows = cur.fetchall()
+        )
+        rows = cur.fetchall()
 
     assert rows == [
         (run_id, '01.01.2026', '16,00'),
@@ -304,10 +304,9 @@ def test_keyrate_pipeline_end_to_end(
         (run_id, '03.01.2026', '17,00')
     ]
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.executemany(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.executemany(
+            """
                 INSERT INTO stg.rgbi_history(
                     run_id,
                     trade_date,
@@ -315,12 +314,12 @@ def test_keyrate_pipeline_end_to_end(
                     currency_id)
                 VALUES (%s, %s, %s, %s)
                 """,
-                [
-                    (999999, '2026-01-01', '100', 'RUB'),
-                    (999999, '2026-01-02', '101', 'RUB'),
-                    (999999, '2026-01-03', '102', 'RUB'),
-                ]
-            )
+            [
+                (999999, '2026-01-01', '100', 'RUB'),
+                (999999, '2026-01-02', '101', 'RUB'),
+                (999999, '2026-01-03', '102', 'RUB'),
+            ]
+        )
 
     dbt_step_id = e2e_repository.start_pipeline_step(
         pipeline_run_id=pipeline.pipeline_run_id,
@@ -345,25 +344,24 @@ def test_keyrate_pipeline_end_to_end(
         status='success',
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT source_run_id, trade_date, keyrate
                   FROM int.keyrate_history
                  ORDER BY trade_date
                 """
-            )
-            int_rows = cur.fetchall()
+        )
+        int_rows = cur.fetchall()
 
-            cur.execute(
-                """
+        cur.execute(
+            """
                 SELECT trade_date, rgbi_close, keyrate
                   FROM marts.rgbi_keyrate
                  ORDER BY trade_date
                 """
-            )
-            mart_rows = cur.fetchall()
+        )
+        mart_rows = cur.fetchall()
 
     assert int_rows == [
         (run_id, date(2026, 1, 1), 16.00),
@@ -393,33 +391,31 @@ def test_keyrate_pipeline_end_to_end(
         }
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT actual_max_date
                   FROM metadata.dataset_runs
                  WHERE id = %s
                 """,
-                (run_id,)
-            )
-            max_date = cur.fetchone()[0]
+            (run_id,)
+        )
+        max_date = cur.fetchone()[0]
 
     assert max_date == date(2026, 1, 3)
 
     e2e_repository.finish_pipeline_run(pipeline.pipeline_run_id)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT status, finished_at
                   FROM metadata.pipeline_runs
                  WHERE id = %s
                 """,
-                (pipeline.pipeline_run_id,)
-            )
-            status, finished_at = cur.fetchone()[:2]
+            (pipeline.pipeline_run_id,)
+        )
+        status, finished_at = cur.fetchone()[:2]
 
     assert status == 'success'
     assert finished_at is not None
@@ -504,16 +500,15 @@ def test_rgbi_pipeline_end_to_end(
 
     e2e_repository.add_staging_metrics(staging_result=stg_metrics)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT run_id, trade_date, close, currency_id
                   FROM stg.rgbi_history
                  ORDER BY trade_date
                 """
-            )
-            rows = cur.fetchall()
+        )
+        rows = cur.fetchall()
 
     assert rows == [
         (run_id, '2025-06-01', '100', 'RUB'),
@@ -521,22 +516,21 @@ def test_rgbi_pipeline_end_to_end(
         (run_id, '2025-06-03', '102', 'RUB')
     ]
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.executemany(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.executemany(
+            """
                 INSERT INTO stg.keyrate_history(
                     run_id,
                     trade_date,
                     keyrate)
                 VALUES (%s, %s, %s)
                 """,
-                [
-                    (999999, '01.06.2025', '16,00'),
-                    (999999, '02.06.2025', '16,50'),
-                    (999999, '03.06.2025', '17,00'),
-                ]
-            )
+            [
+                (999999, '01.06.2025', '16,00'),
+                (999999, '02.06.2025', '16,50'),
+                (999999, '03.06.2025', '17,00'),
+            ]
+        )
 
     dbt_step_id = e2e_repository.start_pipeline_step(
         pipeline_run_id=pipeline.pipeline_run_id,
@@ -561,25 +555,24 @@ def test_rgbi_pipeline_end_to_end(
         status='success',
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT source_run_id, trade_date, rgbi_close, currency_id
                   FROM int.rgbi_history
                  ORDER BY trade_date
                 """
-            )
-            int_rows = cur.fetchall()
+        )
+        int_rows = cur.fetchall()
 
-            cur.execute(
-                """
+        cur.execute(
+            """
                 SELECT trade_date, rgbi_close, keyrate
                   FROM marts.rgbi_keyrate
                  ORDER BY trade_date
                 """
-            )
-            mart_rows = cur.fetchall()
+        )
+        mart_rows = cur.fetchall()
 
     assert int_rows == [
         (run_id, date(2025, 6, 1), 100, 'RUB'),
@@ -609,33 +602,31 @@ def test_rgbi_pipeline_end_to_end(
         }
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT actual_max_date
                   FROM metadata.dataset_runs
                  WHERE id = %s
                 """,
-                (run_id,)
-            )
-            max_date = cur.fetchone()[0]
+            (run_id,)
+        )
+        max_date = cur.fetchone()[0]
 
     assert max_date == date(2025, 6, 3)
 
     e2e_repository.finish_pipeline_run(pipeline.pipeline_run_id)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT status, finished_at
                   FROM metadata.pipeline_runs
                  WHERE id = %s
                 """,
-                (pipeline.pipeline_run_id,)
-            )
-            status, finished_at = cur.fetchone()[:2]
+            (pipeline.pipeline_run_id,)
+        )
+        status, finished_at = cur.fetchone()[:2]
 
     assert status == 'success'
     assert finished_at is not None

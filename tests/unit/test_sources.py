@@ -1,11 +1,10 @@
 from datetime import date
 from unittest.mock import Mock, patch
 
-import pytest
 import httpx
+import pytest
 
 from financial_data.sources import CbrClient, MoexClient
-
 
 CBR_URL = 'https://example.com/cbr'
 MOEX_URL = 'https://example.com/moex'
@@ -58,9 +57,8 @@ def test_cbr_client_raises_http_error(cbr_mock_response) -> None:
     with patch(
         'financial_data.sources.httpx.get',
         return_value=response
-    ):
-        with pytest.raises(httpx.HTTPStatusError):
-            client.fetch_cbr_page()
+    ), pytest.raises(httpx.HTTPStatusError):
+        client.fetch_cbr_page()
 
     response.raise_for_status.assert_called_once()
 

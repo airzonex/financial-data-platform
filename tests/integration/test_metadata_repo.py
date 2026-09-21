@@ -1,15 +1,13 @@
+from collections.abc import Iterator
 from datetime import date
-from typing import Iterator
 
 import psycopg
 import pytest
-
 from config import TEST_DB_CONN_STR
 
-from financial_data.metadata_repo import PipelineInfo
 from financial_data.ingestion import IngestionMetrics
+from financial_data.metadata_repo import PipelineInfo
 from financial_data.staging import StagingMetrics
-
 
 PIPELINE_NAME = 'financial_test'
 
@@ -21,17 +19,16 @@ def clear_metadata_tables() -> Iterator[None]:
     """
 
     def _truncate_tables():
-        with psycopg.connect(TEST_DB_CONN_STR) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     TRUNCATE
                         metadata.pipeline_steps,
                         metadata.dataset_runs,
                         metadata.pipeline_runs
                     RESTART IDENTITY
                     """
-                )
+            )
 
     _truncate_tables()
     yield
@@ -54,17 +51,16 @@ def test_create_pipeline_run_persists_data(metadata_repo) -> None:
     """
     pipeline_run = metadata_repo.create_pipeline_run(PIPELINE_NAME)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT pipeline_name, status
                   FROM metadata.pipeline_runs
                  WHERE id = %s
                 """,
-                (pipeline_run.pipeline_run_id,)
-            )
-            result = cur.fetchone()
+            (pipeline_run.pipeline_run_id,)
+        )
+        result = cur.fetchone()
 
     assert result == (PIPELINE_NAME, 'running')
 
@@ -82,17 +78,16 @@ def test_create_dataset_run(metadata_repo) -> None:
         requested_start=requested_start
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT pipeline_run_id, dataset, requested_start, status
                   FROM metadata.dataset_runs
                  WHERE id = %s
                 """,
-                (run_id,)
-            )
-            result = cur.fetchone()
+            (run_id,)
+        )
+        result = cur.fetchone()
 
     assert result == (
         pipeline.pipeline_run_id,
@@ -142,17 +137,16 @@ def test_determine_date_start_ignores_failed_runs(metadata_repo) -> None:
         requested_start=date(2014, 1, 1)
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 UPDATE metadata.dataset_runs
                    SET status = 'error',
                        actual_max_date = now()
                  WHERE id = %s
                 """,
-                (run_id,)
-            )
+            (run_id,)
+        )
 
     result = metadata_repo.determine_date_start('rgbi')
 
@@ -177,17 +171,16 @@ def test_finish_pipeline_step_success(metadata_repo):
         records_out=95
     )
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT status, records_in, records_out, error, finished_at
                   FROM metadata.pipeline_steps
                  WHERE id = %s
                 """,
-                (step_id,)
-            )
-            result = cur.fetchone()
+            (step_id,)
+        )
+        result = cur.fetchone()
 
     assert result[0] == 'success'
     assert result[1] == 100
@@ -248,17 +241,16 @@ def test_finish_pipeline_run_is_success_when_all_steps_succeed(metadata_repo) ->
 
     metadata_repo.finish_pipeline_run(pipeline.pipeline_run_id)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT status, error, finished_at
                   FROM metadata.pipeline_runs
                  WHERE id = %s
                 """,
-                (pipeline.pipeline_run_id,)
-            )
-            res = cur.fetchone()
+            (pipeline.pipeline_run_id,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == 'success'
     assert res[1] == ''
@@ -295,17 +287,16 @@ def test_finish_pipeline_run_error_if_step_fails(metadata_repo) -> None:
 
     metadata_repo.finish_pipeline_run(pipeline.pipeline_run_id)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT status, error, finished_at
                   FROM metadata.pipeline_runs
                  WHERE id = %s
                 """,
-                (pipeline.pipeline_run_id,)
-            )
-            res = cur.fetchone()
+            (pipeline.pipeline_run_id,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == 'error'
     assert res[1] == 'staging error'
@@ -317,7 +308,7 @@ def test_finish_pipeline_run_is_running_when_step_is_running(metadata_repo) -> N
     """
     pipeline = metadata_repo.create_pipeline_run(PIPELINE_NAME)
 
-    step_id = metadata_repo.start_pipeline_step(
+    metadata_repo.start_pipeline_step(
         pipeline.pipeline_run_id,
         'ingestion_rgbi',
         'ingestion'
@@ -325,17 +316,16 @@ def test_finish_pipeline_run_is_running_when_step_is_running(metadata_repo) -> N
 
     metadata_repo.finish_pipeline_run(pipeline.pipeline_run_id)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT status, finished_at
                   FROM metadata.pipeline_runs
                  WHERE id = %s
                 """,
-                (pipeline.pipeline_run_id,)
-            )
-            res = cur.fetchone()
+            (pipeline.pipeline_run_id,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == 'running'
     assert res[1] is not None
@@ -377,17 +367,16 @@ def test_add_ingestion_metrics(metadata_repo) -> None:
 
     metadata_repo.add_ingestion_metrics(metrics)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT minio_bucket, minio_prefix, objects_saved
                   FROM metadata.dataset_runs
                  WHERE id = %s
                 """,
-                (run_id,)
-            )
-            res = cur.fetchone()
+            (run_id,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == bucket
     assert res[1] == prefix
@@ -433,17 +422,16 @@ def test_add_staging_metrics(metadata_repo) -> None:
 
     metadata_repo.add_staging_metrics(metrics)
 
-    with psycopg.connect(TEST_DB_CONN_STR) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
+    with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
                 SELECT records_loaded
                   FROM metadata.dataset_runs
                  WHERE id = %s
                 """,
-                (run_id,)
-            )
-            res = cur.fetchone()
+            (run_id,)
+        )
+        res = cur.fetchone()
 
     assert res[0] == loaded
 

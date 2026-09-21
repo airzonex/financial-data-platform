@@ -1,14 +1,13 @@
-from unittest.mock import patch, Mock, call
 from datetime import date
+from unittest.mock import Mock, call, patch
 
 import pytest
 
 from financial_data.transformation import (
-    RgbiWatermarkProvider, 
+    DatasetRunFinalizer,
     KeyrateWatermarkProvider,
-    DatasetRunFinalizer
+    RgbiWatermarkProvider,
 )
-
 
 DB_CONN_STR = 'postgresql://test'
 RUN_ID = 123

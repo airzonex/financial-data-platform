@@ -1,5 +1,5 @@
-from typing import Protocol
 from datetime import date
+from typing import Protocol
 
 import psycopg
 
@@ -25,12 +25,11 @@ class RgbiWatermarkProvider:
              WHERE source_run_id = %s
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (self.run_id,))
-                row = cur.fetchone()
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (self.run_id,))
+            row = cur.fetchone()
 
-                return row[0] if row else None
+            return row[0] if row else None
 
 class KeyrateWatermarkProvider:
 
@@ -45,12 +44,11 @@ class KeyrateWatermarkProvider:
              WHERE source_run_id = %s
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (self.run_id,))
-                row = cur.fetchone()
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (self.run_id,))
+            row = cur.fetchone()
 
-                return row[0] if row else None
+            return row[0] if row else None
 
 class DatasetRunFinalizer:
 

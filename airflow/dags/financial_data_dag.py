@@ -1,17 +1,33 @@
-from datetime import datetime
 import subprocess
+from datetime import UTC, datetime
 
+import httpx
 from airflow.sdk import dag, task
 from airflow.sdk.bases.hook import BaseHook
-import httpx
 
-from financial_data.metadata_repo import MetadataRepository, PipelineInfo, DatasetRunInfo
-from financial_data.ingestion import CbrKeyrateIngestion, MoexRgbiIngestion, IngestionMetrics
-from financial_data.sources import CbrClient, MoexClient
-from financial_data.storage import MinioStorage
-from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader, StagingMetrics
-from financial_data.transformation import RgbiWatermarkProvider, KeyrateWatermarkProvider, DatasetRunFinalizer
 from financial_data.config import *
+from financial_data.ingestion import (
+    CbrKeyrateIngestion,
+    IngestionMetrics,
+    MoexRgbiIngestion,
+)
+from financial_data.metadata_repo import (
+    DatasetRunInfo,
+    MetadataRepository,
+    PipelineInfo,
+)
+from financial_data.sources import CbrClient, MoexClient
+from financial_data.staging import (
+    KeyrateStagingLoader,
+    RgbiStagingLoader,
+    StagingMetrics,
+)
+from financial_data.storage import MinioStorage
+from financial_data.transformation import (
+    DatasetRunFinalizer,
+    KeyrateWatermarkProvider,
+    RgbiWatermarkProvider,
+)
 
 POSTGRES_CONN_ID = 'financial_postgres'
 MINIO_CONN_ID = 'financial_minio'
@@ -19,7 +35,7 @@ MINIO_CONN_ID = 'financial_minio'
 
 @dag(
     dag_id='financial_data',
-    start_date=datetime(2026, 1, 1),
+    start_date=datetime(2026, 1, 1, tzinfo=UTC),
     schedule='@daily',
     catchup=False
 )

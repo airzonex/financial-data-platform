@@ -15,13 +15,17 @@ CBR
 - ошибка клиента не проглатывается
 """
 
-from unittest.mock import call
 from datetime import date
+from unittest.mock import call
 
 import pytest
 
-from financial_data.ingestion import CbrKeyrateIngestion, MoexRgbiIngestion, IngestionMetrics, MoexPage
-
+from financial_data.ingestion import (
+    CbrKeyrateIngestion,
+    IngestionMetrics,
+    MoexPage,
+    MoexRgbiIngestion,
+)
 
 BUCKET = 'raw'
 RUN_ID = 123

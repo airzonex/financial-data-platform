@@ -1,12 +1,11 @@
-from datetime import date, timedelta
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Literal
-
-from financial_data.ingestion import IngestionMetrics
-from financial_data.staging import StagingMetrics
 
 import psycopg
 
+from financial_data.ingestion import IngestionMetrics
+from financial_data.staging import StagingMetrics
 
 DEFAULT_DATE_START = date(2014, 1, 1)
 
@@ -40,10 +39,9 @@ class MetadataRepository:
             RETURNING id, started_at::date
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (pipeline_name, 'running'))
-                run_id, run_date = cur.fetchone()[0:2]
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (pipeline_name, 'running'))
+            run_id, run_date = cur.fetchone()[0:2]
 
         return PipelineInfo(run_id, run_date)
 
@@ -55,10 +53,9 @@ class MetadataRepository:
                AND status = %s
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (dataset, 'success'))
-                res = cur.fetchone()[0]
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (dataset, 'success'))
+            res = cur.fetchone()[0]
 
         return res
 
@@ -77,10 +74,9 @@ class MetadataRepository:
             RETURNING id
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (pipeline_run_id, dataset, requested_start, 'running'))
-                res = cur.fetchone()[0]
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (pipeline_run_id, dataset, requested_start, 'running'))
+            res = cur.fetchone()[0]
 
         return res
 
@@ -96,10 +92,9 @@ class MetadataRepository:
             RETURNING id
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (pipeline_run_id, step_name, step_type, 'running'))
-                res = cur.fetchone()[0]
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (pipeline_run_id, step_name, step_type, 'running'))
+            res = cur.fetchone()[0]
 
         return res
 
@@ -121,15 +116,14 @@ class MetadataRepository:
                AND status = 'running'
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (status, records_in, records_out, error, step_id))
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (status, records_in, records_out, error, step_id))
 
-                if cur.rowcount != 1:
-                    raise ValueError(
-                        f'Step {step_id} was not updated (params: status - {status}, '
-                        f'records_in - {records_in}, records_out - {records_out}, error - {error})'
-                    )
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f'Step {step_id} was not updated (params: status - {status}, '
+                    f'records_in - {records_in}, records_out - {records_out}, error - {error})'
+                )
 
     def add_ingestion_metrics(self, ingestion_result: IngestionMetrics) -> None:
         query = """
@@ -140,19 +134,18 @@ class MetadataRepository:
              WHERE id = %s
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (
-                    ingestion_result.bucket,
-                    ingestion_result.objects_prefix,
-                    ingestion_result.objects_saved,
-                    ingestion_result.run_id
-                    ))
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (
+                ingestion_result.bucket,
+                ingestion_result.objects_prefix,
+                ingestion_result.objects_saved,
+                ingestion_result.run_id
+                ))
 
-                if cur.rowcount != 1:
-                    raise ValueError(
-                        f'Metrics for {ingestion_result.run_id} dataset run were not added'
-                    )
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f'Metrics for {ingestion_result.run_id} dataset run were not added'
+                )
 
     def add_staging_metrics(self, staging_result: StagingMetrics) -> None:
         query = """
@@ -161,14 +154,13 @@ class MetadataRepository:
              WHERE id = %s
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (staging_result.records_loaded, staging_result.run_id))
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (staging_result.records_loaded, staging_result.run_id))
 
-                if cur.rowcount != 1:
-                    raise ValueError(
-                        f'Metrics for {staging_result.run_id} dataset run were not added'
-                    )
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f'Metrics for {staging_result.run_id} dataset run were not added'
+                )
 
 
     def finish_dataset_run(self, run_id: int, actual_max_date: date) -> None:
@@ -180,14 +172,13 @@ class MetadataRepository:
                   AND status = 'running'
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (actual_max_date, run_id))
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
+            cur.execute(query, (actual_max_date, run_id))
 
-                if cur.rowcount != 1:
-                    raise ValueError(
-                        f'Dataset run {run_id} was not finished, no data found for update'
-                    )
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f'Dataset run {run_id} was not finished, no data found for update'
+                )
 
     def __pipeline_steps_status(self, pipeline_run_id: int, cur: psycopg.Cursor) -> StepsStatus | None:
         query = """
@@ -223,20 +214,19 @@ class MetadataRepository:
              WHERE id = %s
         """
 
-        with psycopg.connect(self.connection_str) as conn:
-            with conn.cursor() as cur:
+        with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
 
-                steps_status = self.__pipeline_steps_status(pipeline_run_id, cur)
+            steps_status = self.__pipeline_steps_status(pipeline_run_id, cur)
 
-                if steps_status is None:
-                    raise ValueError(
-                        f'Pipeline run {pipeline_run_id} was not finished, no pipeline steps found'
-                    )
+            if steps_status is None:
+                raise ValueError(
+                    f'Pipeline run {pipeline_run_id} was not finished, no pipeline steps found'
+                )
 
-                cur.execute(query, (steps_status.status, steps_status.error, pipeline_run_id))
+            cur.execute(query, (steps_status.status, steps_status.error, pipeline_run_id))
 
-                if cur.rowcount != 1:
-                    raise ValueError(
-                        f'Pipeline run {pipeline_run_id} was not finished, no rows to update'
-                    )
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f'Pipeline run {pipeline_run_id} was not finished, no rows to update'
+                )
 

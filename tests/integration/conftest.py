@@ -1,11 +1,17 @@
 import uuid
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
-from minio import Minio
+from config import (
+    MINIO_ACCESS_KEY,
+    MINIO_BUCKET,
+    MINIO_ENDPOINT,
+    MINIO_SECRET_KEY,
+    TEST_DB_CONN_STR,
+)
 
-from config import TEST_DB_CONN_STR, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET
 from financial_data.storage import MinioStorage
+from minio import Minio
 
 
 @pytest.fixture

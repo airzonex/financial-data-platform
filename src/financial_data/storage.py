@@ -1,5 +1,5 @@
-from io import BytesIO
 from collections.abc import Iterator
+from io import BytesIO
 
 from minio import Minio
 

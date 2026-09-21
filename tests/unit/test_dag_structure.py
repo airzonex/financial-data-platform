@@ -2,7 +2,6 @@ from datetime import date
 
 from test_utils import load_dag
 
-
 dag = load_dag()
 
 EXPECTED_TASKS = {

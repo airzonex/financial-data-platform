@@ -1,7 +1,7 @@
-import psycopg
 import json
 from dataclasses import dataclass
 
+import psycopg
 from bs4 import BeautifulSoup
 
 from financial_data.storage import MinioStorage
@@ -115,11 +115,10 @@ class KeyrateStagingLoader:
 
         data = self._parse_raw_bytes(raw_bytes)
 
-        with psycopg.connect(self.db_conn_str) as conn:
-            with conn.cursor() as cur:
-                self._clear_history(cur)
-                cur.executemany(insert_query, data)
-                metrics: StagingMetrics = self._get_metrics(cur)
+        with psycopg.connect(self.db_conn_str) as conn, conn.cursor() as cur:
+            self._clear_history(cur)
+            cur.executemany(insert_query, data)
+            metrics: StagingMetrics = self._get_metrics(cur)
 
         return metrics
 
@@ -170,47 +169,46 @@ class RgbiStagingLoader:
             VALUES (%s, %s, %s, %s)
         """
 
-        with psycopg.connect(self.db_conn_str) as conn:
-            with conn.cursor() as cur:
+        with psycopg.connect(self.db_conn_str) as conn, conn.cursor() as cur:
 
-                self._clear_history(cur)
+            self._clear_history(cur)
 
-                for object_name in self.storage.list_objects(
+            for object_name in self.storage.list_objects(
+                bucket=self.bucket,
+                prefix=self.prefix
+            ):
+                if not object_name.endswith('.json'):
+                    continue
+
+                raw_bytes = self.storage.get(
                     bucket=self.bucket,
-                    prefix=self.prefix
-                ):
-                    if not object_name.endswith('.json'):
-                        continue
+                    object_name=object_name
+                )
 
-                    raw_bytes = self.storage.get(
-                        bucket=self.bucket,
-                        object_name=object_name
+                page = json.loads(raw_bytes)
+
+                columns = page['history']['columns']
+                data = page['history']['data']
+
+                date_idx = columns.index(FLD_TRADE_DATE)
+                close_idx = columns.index(FLD_CLOSE)
+                currency_idx = columns.index(FLD_CURRENCY)
+
+                if not data:
+                    raise ValueError('history.data is empty')
+
+                rows = [
+                    (
+                        self.run_id,
+                        row[date_idx],
+                        row[close_idx],
+                        row[currency_idx]
                     )
+                    for row in data
+                ] 
 
-                    page = json.loads(raw_bytes)
+                cur.executemany(insert_query, rows)
 
-                    columns = page['history']['columns']
-                    data = page['history']['data']
-
-                    date_idx = columns.index(FLD_TRADE_DATE)
-                    close_idx = columns.index(FLD_CLOSE)
-                    currency_idx = columns.index(FLD_CURRENCY)
-
-                    if not data:
-                        raise ValueError('history.data is empty')
-
-                    rows = [
-                        (
-                            self.run_id,
-                            row[date_idx],
-                            row[close_idx],
-                            row[currency_idx]
-                        )
-                        for row in data
-                    ] 
-
-                    cur.executemany(insert_query, rows)
-
-                metrics: StagingMetrics = self._get_metrics(cur)
+            metrics: StagingMetrics = self._get_metrics(cur)
 
         return metrics

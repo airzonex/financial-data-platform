@@ -4,7 +4,6 @@ import pytest
 
 from financial_data.staging import KeyrateStagingLoader, RgbiStagingLoader
 
-
 RUN_ID = 123
 BUCKET = 'raw'
 PREFIX_CBR = 'cbr/keyrate/ingestion_date=2026-09-11/run_id=123'
@@ -329,7 +328,7 @@ def test_rgbi_load_not_json_objects_are_ignored(
     RgbiStagingLoader
     He-json объекты игнорируются
     """
-    conn, cursor = db_connection
+    conn, _ = db_connection
 
     json_object = f'{PREFIX_MOEX}/part-0000.json'
     html_object = f'{PREFIX_MOEX}/part-0001.html'
@@ -401,9 +400,11 @@ def test_rgbi_load_raises_when_no_needed_column(
         db_conn_str=DB_CONN_STR
     )
 
-    with patch('financial_data.staging.psycopg.connect', return_value=conn):
-        with pytest.raises(ValueError, match="'CLOSE' is not in list"):
-            loader.load()
+    with (
+        patch('financial_data.staging.psycopg.connect', return_value=conn),
+        pytest.raises(ValueError, match="'CLOSE' is not in list")
+    ):
+        loader.load()
 
 def test_rgbi_load_raises_when_data_is_empty(
     storage,
@@ -436,6 +437,8 @@ def test_rgbi_load_raises_when_data_is_empty(
         db_conn_str=DB_CONN_STR
     )
 
-    with patch('financial_data.staging.psycopg.connect', return_value=conn):
-        with pytest.raises(ValueError, match="history.data is empty"):
-            loader.load()
+    with (
+        patch('financial_data.staging.psycopg.connect', return_value=conn),
+        pytest.raises(ValueError, match="history.data is empty")
+    ):
+        loader.load()

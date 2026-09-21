@@ -1,8 +1,7 @@
-from datetime import date, time
 from dataclasses import dataclass
+from datetime import date, time
 
 import httpx
-
 
 CBR_DATE_FORMAT = '%d.%m.%Y'
 

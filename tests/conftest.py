@@ -1,11 +1,11 @@
-from unittest.mock import Mock, MagicMock
+from unittest.mock import MagicMock, Mock
 
-import pytest
 import httpx
+import pytest
 
-from financial_data.storage import MinioStorage
-from financial_data.sources import CbrClient, MoexClient
 from financial_data.ingestion import MoexPage
+from financial_data.sources import CbrClient, MoexClient
+from financial_data.storage import MinioStorage
 
 
 @pytest.fixture

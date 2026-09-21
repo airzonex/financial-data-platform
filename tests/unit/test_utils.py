@@ -1,9 +1,8 @@
+import importlib.util
 from pathlib import Path
 from typing import Protocol, cast
-import importlib.util
 
 from airflow import DAG
-
 
 DAG_FILE = (
     Path(__file__).resolve().parents[2]
