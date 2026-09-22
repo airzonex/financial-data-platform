@@ -17,6 +17,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Airflow
+        run: |
+          pip install \
+            "apache-airflow==3.3.1" \
+            --constraint \
+            "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.12.txt"
+
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
@@ -25,3 +32,6 @@ jobs:
 
       - name: Type check
         run: mypy
+
+      - name: Run unit tests
+        run: pytest tests/unit
