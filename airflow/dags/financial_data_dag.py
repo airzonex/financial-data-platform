@@ -54,6 +54,13 @@ def financial_data_dag():
     def get_minio_storage() -> MinioStorage:
         conn = BaseHook.get_connection(MINIO_CONN_ID)
 
+        if conn.host is None:
+            raise ValueError(f'Connection {MINIO_CONN_ID} has no host configured')
+        if conn.login is None:
+            raise ValueError(f'Connection {MINIO_CONN_ID} has no login configured')
+        if conn.password is None:
+            raise ValueError(f'Connection {MINIO_CONN_ID} has no password configured')
+
         return MinioStorage(
             endpoint=conn.host + ':' + str(conn.port),
             access_key=conn.login,
@@ -381,4 +388,4 @@ def financial_data_dag():
     finish_runs >> finish_pipeline
 
 
-dag = financial_data_dag()
+financial_dag = financial_data_dag()

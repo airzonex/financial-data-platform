@@ -26,3 +26,13 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+financial_data = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+files = ["src"]
+explicit_package_bases = true
+check_untyped_defs = true

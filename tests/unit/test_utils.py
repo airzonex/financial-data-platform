@@ -31,4 +31,4 @@ def _load_dag_module(path: Path) -> DagModule:
 
 def load_dag() -> DAG:
     dag_module = _load_dag_module(DAG_FILE)
-    return dag_module.dag
+    return dag_module.financial_dag

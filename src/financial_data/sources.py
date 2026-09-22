@@ -1,5 +1,6 @@
+import time
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date
 
 import httpx
 
@@ -48,7 +49,7 @@ class MoexClient:
         start: int = 0,
         limit: int | None = None,
     ) -> MoexPage:
-        params = {
+        params: dict[str, str | int] = {
             "from": self.date_start.isoformat(),
             "start": start,
         }
@@ -77,3 +78,5 @@ class MoexClient:
                     raise
 
                 time.sleep(2 ** (attempt - 1))
+
+        raise RuntimeError("Unreachable: retry loop exited without return or raise")

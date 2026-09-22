@@ -41,7 +41,12 @@ class MetadataRepository:
 
         with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
             cur.execute(query, (pipeline_name, 'running'))
-            run_id, run_date = cur.fetchone()[0:2]
+            row = cur.fetchone()
+
+            if row is None:
+                raise ValueError(f'Failed to create pipeline run for {pipeline_name}')
+
+            run_id, run_date = row[0:2]
 
         return PipelineInfo(run_id, run_date)
 
@@ -55,9 +60,12 @@ class MetadataRepository:
 
         with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
             cur.execute(query, (dataset, 'success'))
-            res = cur.fetchone()[0]
+            row = cur.fetchone()
 
-        return res
+        if row is None:
+            return None
+
+        return row[0]
 
     def determine_date_start(self, dataset: str) -> date:
         actual_max_date = self.__get_last_successful_date(dataset)
@@ -76,9 +84,12 @@ class MetadataRepository:
 
         with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
             cur.execute(query, (pipeline_run_id, dataset, requested_start, 'running'))
-            res = cur.fetchone()[0]
+            row = cur.fetchone()
 
-        return res
+            if row is None:
+                raise ValueError(f'Failed to create dataset run for {dataset}')
+
+        return row[0]
 
     def start_pipeline_step(
             self, 
@@ -94,9 +105,12 @@ class MetadataRepository:
 
         with psycopg.connect(self.connection_str) as conn, conn.cursor() as cur:
             cur.execute(query, (pipeline_run_id, step_name, step_type, 'running'))
-            res = cur.fetchone()[0]
+            row = cur.fetchone()
 
-        return res
+            if row is None:
+                raise ValueError(f'Failed to start pipeline step {step_name}')
+
+        return row[0]
 
     def finish_pipeline_step(
             self, 

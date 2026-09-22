@@ -57,7 +57,7 @@ class KeyrateStagingLoader:
 
         rows = table.find_all('tr')[1:]
 
-        data: tuple[tuple[int, str, str], ...] = []
+        data: list[tuple[int, str, str]] = []
         for row in rows:
             cols = [c.text.strip() for c in row.find_all('td')]
             if len(cols) >= 2:
