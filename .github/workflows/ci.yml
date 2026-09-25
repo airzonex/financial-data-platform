@@ -63,6 +63,15 @@ jobs:
           Minio('localhost:9000', access_key='minioadmin', secret_key='minioadmin', secure=False).list_buckets()
           "
 
+      - name: Init database schemas
+        env:
+          PGPASSWORD: airflow
+        run: |
+          for f in postgres/init/*; do
+            echo "Applying $f"
+            psql -h localhost -p 5433 -U airflow -d financial_test -f "$f"
+          done
+
       - name: Lint
         run: ruff check src/ tests/ airflow/
 
