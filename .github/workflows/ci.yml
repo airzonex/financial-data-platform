@@ -87,3 +87,35 @@ jobs:
 
       - name: Run e2e tests
         run: pytest tests/e2e
+
+  compose:
+    name: Docker Compose validation
+    runs-on: ubuntu-24.04
+
+    env:
+      TZ: UTC
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+      POSTGRES_HOST_PORT: 5433
+      AIRFLOW_PORT: 8080
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_API_PORT: 9000
+      MINIO_CONSOLE_PORT: 9001
+      AIRFLOW_UID: 50000
+      AIRFLOW_ADMIN_USERNAME: admin
+      AIRFLOW_ADMIN_PASSWORD: admin
+      AIRFLOW_FERNET_KEY: "00000000000000000000000000000000"
+      AIRFLOW_SECRET_KEY: "ci-secret-key"
+      AIRFLOW_JWT_SECRET_KEY: "ci-jwt-secret-key"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Validate Docker Compose
+        run: docker compose config
+
+      - name: Build Docker images
+        run: docker compose build
