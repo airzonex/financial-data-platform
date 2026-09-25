@@ -23,6 +23,16 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      minio:
+        image: chainguard/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+          - 9001:9001
+        command: server /data --console-address ":9001"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -45,6 +55,13 @@ jobs:
       - name: Check PostgreSQL
         run: |
           python -c "import psycopg; psycopg.connect('postgresql://airflow:airflow@localhost:5433/financial_test').close()"
+
+      - name: Check MinIO
+        run: |
+          python -c "
+          from minio import Minio
+          Minio('localhost:9000', access_key='minioadmin', secret_key='minioadmin', secure=False).list_buckets()
+          "
 
       - name: Lint
         run: ruff check src/ tests/ airflow/
