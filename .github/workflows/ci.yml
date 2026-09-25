@@ -83,3 +83,6 @@ jobs:
 
       - name: Run integration tests
         run: pytest tests/integration
+
+      - name: Run e2e tests
+        run: pytest tests/e2e
