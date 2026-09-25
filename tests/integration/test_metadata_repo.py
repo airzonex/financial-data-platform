@@ -13,7 +13,7 @@ PIPELINE_NAME = 'financial_test'
 
 
 @pytest.fixture(autouse=True)
-def clear_metadata_tables() -> Iterator[None]:
+def clear_metadata_tables(ensure_test_database) -> Iterator[None]:
     """
     фикстура чистит таблицы из metadata перед и после каждого теста
     """

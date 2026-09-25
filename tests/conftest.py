@@ -1,12 +1,22 @@
+from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
 import httpx
+import psycopg
 import pytest
+from config import ADMIN_DB_CONN_STR, TEST_DB_CONN_STR, TEST_DB_NAME
 
 from financial_data.ingestion import MoexPage
 from financial_data.sources import CbrClient, MoexClient
 from financial_data.storage import MinioStorage
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+SCHEMA_FILES = [
+    PROJECT_ROOT / 'postgres' / 'init' / '01-init.sql',
+    PROJECT_ROOT / 'postgres' / 'init' / '02-metadata.sql',
+    PROJECT_ROOT / 'postgres' / 'init' / '03-stg.sql',
+]
 
 @pytest.fixture
 def cbr_mock_response():
@@ -83,3 +93,28 @@ def db_connection():
     cursor.__exit__.return_value = None
 
     return conn, cursor
+
+@pytest.fixture(scope='session', autouse=True)
+def ensure_test_database() -> None:
+    """
+    Creates test database if not exists
+    """
+    with psycopg.connect(ADMIN_DB_CONN_STR, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT 1 FROM pg_database WHERE datname = %s',
+            (TEST_DB_NAME,)
+        )
+        db_exists = cur.fetchone() is not None
+
+        if not db_exists:
+            cur.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
+
+    _init_test_db()
+
+def _init_test_db() -> None:
+    with psycopg.connect(TEST_DB_CONN_STR, autocommit=True) as conn, conn.cursor() as cur:
+        for file_path in SCHEMA_FILES:
+            if not file_path.exists():
+                raise FileNotFoundError(f'Schema file not found: {file_path}')
+            sql = file_path.read_text()
+            cur.execute(sql)

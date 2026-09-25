@@ -14,7 +14,7 @@ PREFIX_MOEX = 'moex/rgbi/ingestion_date=2026-09-11/run_id=123'
 
 
 @pytest.fixture(autouse=True)
-def clear_staging_tables() -> Iterator[None]:
+def clear_staging_tables(ensure_test_database) -> Iterator[None]:
     """
     фикстура чистит таблицы в stg перед и после каждого теста
     """

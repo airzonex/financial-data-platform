@@ -7,6 +7,13 @@ from unittest.mock import Mock
 
 import psycopg
 import pytest
+from config import (
+    MINIO_ACCESS_KEY,
+    MINIO_BUCKET,
+    MINIO_ENDPOINT,
+    MINIO_SECRET_KEY,
+    TEST_DB_CONN_STR,
+)
 
 from financial_data.ingestion import CbrKeyrateIngestion, MoexRgbiIngestion
 from financial_data.metadata_repo import MetadataRepository
@@ -19,15 +26,6 @@ from financial_data.transformation import (
     RgbiWatermarkProvider,
 )
 from minio import Minio
-
-TEST_DB_CONN_STR = (
-    'postgresql://airflow:airflow@localhost:5433/financial_test'
-)
-
-MINIO_ENDPOINT = 'localhost:9000'
-MINIO_USER = 'minioadmin'
-MINIO_PASS = 'minioadmin'
-MINIO_BUCKET = 'test'
 
 PIPELINE_NAME = 'financial_data_test'
 
@@ -113,8 +111,8 @@ def e2e_moex_client(
 def e2e_storage() -> MinioStorage:
     return MinioStorage(
         endpoint=MINIO_ENDPOINT,
-        access_key=MINIO_USER,
-        secret_key=MINIO_PASS
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY
     )
 
 @pytest.fixture
@@ -125,8 +123,8 @@ def e2e_repository() -> MetadataRepository:
 def e2e_minio_client() -> Minio:
     client = Minio(
         endpoint=MINIO_ENDPOINT,
-        access_key=MINIO_USER,
-        secret_key=MINIO_PASS,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
         secure=False
     )
 
@@ -151,7 +149,7 @@ def cleanup_test_objects(
         )
 
 @pytest.fixture(autouse=True)
-def clear_repository() -> Iterator[None]:
+def clear_repository(ensure_test_database) -> Iterator[None]:
 
     def _truncata_tables() -> None:
         with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
@@ -170,7 +168,7 @@ def clear_repository() -> Iterator[None]:
     _truncata_tables()
 
 @pytest.fixture(autouse=True)
-def clear_staging() -> Iterator[None]:
+def clear_staging(ensure_test_database) -> Iterator[None]:
 
     def _truncate_tables() -> None:
         with psycopg.connect(TEST_DB_CONN_STR) as conn, conn.cursor() as cur:
