@@ -89,8 +89,9 @@ jobs:
         run: pytest tests/e2e
 
   compose:
-    name: Docker Compose validation
+    name: Docker Compose smoke test
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
 
     env:
       TZ: UTC
@@ -106,7 +107,7 @@ jobs:
       AIRFLOW_UID: 50000
       AIRFLOW_ADMIN_USERNAME: admin
       AIRFLOW_ADMIN_PASSWORD: admin
-      AIRFLOW_FERNET_KEY: "00000000000000000000000000000000"
+      AIRFLOW_FERNET_KEY: "HW5rPGPCgbzgSImM9EBrWELw_rWNsyocqTPG55PzaIc="
       AIRFLOW_SECRET_KEY: "ci-secret-key"
       AIRFLOW_JWT_SECRET_KEY: "ci-jwt-secret-key"
 
@@ -119,3 +120,82 @@ jobs:
 
       - name: Build Docker images
         run: docker compose build
+
+      - name: Start services
+        run: docker compose up -d
+
+      - name: Show service status
+        run: docker compose ps -a
+
+      - name: Check PostgreSQL
+        run: |
+          for i in {1..30}; do
+            if docker compose exec -T postgres \
+              pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+          done
+          echo "PostgreSQL did not become ready"
+          exit 1
+
+      - name: Wait for service initialization
+        run: |
+          for i in {1..60}; do
+            airflow_status="$(docker inspect -f '{{.State.Status}}' financial-airflow-init)"
+            minio_status="$(docker inspect -f '{{.State.Status}}' financial-minio-init)"
+
+            if [ "$airflow_status" = "exited" ] && [ "$minio_status" = "exited" ]; then
+              break
+            fi
+
+            echo "Waiting for initialization..."
+            echo "airflow-init: $airflow_status"
+            echo "minio-init: $minio_status"
+            sleep 2
+          done
+          
+          test "$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' financial-airflow-init)" = "exited 0"
+          test "$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' financial-minio-init)" = "exited 0"
+
+      - name: Check MinIO
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent http://localhost:${MINIO_API_PORT}/minio/health/live > /dev/null; then
+              echo "MinIO is ready"
+              exit 0
+            fi
+            echo "Waiting for MinIO..."
+            sleep 2
+          done
+          echo "MinIO did not become ready"
+          exit 1
+
+      - name: Wait for Airflow API
+        run: |
+          for i in {1..60}; do
+            if curl --fail --silent http://localhost:${AIRFLOW_PORT}/api/v2/monitor/health > /dev/null; then
+              echo "Airflow API is ready"
+              exit 0
+            fi
+            echo "Waiting for Airflow API..."
+            sleep 2
+          done
+          echo "Airflow API did not become ready"
+          exit 1
+
+      - name: Check Airflow services
+        run: |
+          test "$(docker inspect -f '{{.State.Status}}' financial-airflow-api-server)" = "running"
+          test "$(docker inspect -f '{{.State.Status}}' financial-airflow-scheduler)" = "running"
+          test "$(docker inspect -f '{{.State.Status}}' financial-airflow-dag-processor)" = "running"
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
