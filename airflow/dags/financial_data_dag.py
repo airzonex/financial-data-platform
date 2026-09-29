@@ -37,7 +37,8 @@ MINIO_CONN_ID = 'financial_minio'
     dag_id='financial_data',
     start_date=datetime(2026, 1, 1, tzinfo=UTC),
     schedule='@daily',
-    catchup=False
+    catchup=False,
+    max_active_runs=1
 )
 def financial_data_dag():
 
