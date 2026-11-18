@@ -25,7 +25,7 @@ class KeyrateStagingLoader:
     def _get_single_object_name(self) -> str:
         objects = self.storage.list_objects(
             bucket=self.bucket,
-            prefix=self.prefix
+            prefix=f"{self.prefix.rstrip('/')}/"
         )
 
         try:
@@ -175,7 +175,7 @@ class RgbiStagingLoader:
 
             for object_name in self.storage.list_objects(
                 bucket=self.bucket,
-                prefix=self.prefix
+                prefix=f"{self.prefix.rstrip('/')}/"
             ):
                 if not object_name.endswith('.json'):
                     continue

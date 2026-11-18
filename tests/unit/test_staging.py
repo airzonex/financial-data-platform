@@ -1,4 +1,5 @@
-from unittest.mock import patch
+import json
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -236,7 +237,7 @@ def test_keyrate_load_reads_objects_and_inserts_rows(
 
     storage.list_objects.assert_called_once_with(
         bucket=BUCKET,
-        prefix=PREFIX_CBR
+        prefix=f"{PREFIX_CBR}/",
     )
 
     storage.get.assert_called_once_with(
@@ -300,7 +301,7 @@ def test_rgbi_reads_json_and_inserts_rows(
 
     storage.list_objects.assert_called_once_with(
         bucket=BUCKET,
-        prefix=PREFIX_MOEX
+        prefix=f"{PREFIX_MOEX}/",
     )
 
     storage.get.assert_called_once_with(
@@ -442,3 +443,74 @@ def test_rgbi_load_raises_when_data_is_empty(
         pytest.raises(ValueError, match="history.data is empty")
     ):
         loader.load()
+
+
+@pytest.mark.parametrize("trailing_slash", [False, True])
+@pytest.mark.parametrize("dataset", ["keyrate", "rgbi"])
+def test_staging_reads_only_the_requested_run(
+    dataset: str,
+    trailing_slash: bool,
+) -> None:
+    base_prefix = f"{dataset}/ingestion_date=2026-01-01"
+    run_prefix = f"{base_prefix}/run_id=1"
+    supplied_prefix = run_prefix + ("/" if trailing_slash else "")
+
+    if dataset == "keyrate":
+        loader_class = KeyrateStagingLoader
+        filename = "part-0000.html"
+        payload = b"""
+        <table>
+          <tr><th>Date</th><th>Rate</th></tr>
+          <tr><td>01.01.2026</td><td>16,00</td></tr>
+        </table>
+        """
+    else:
+        loader_class = RgbiStagingLoader
+        filename = "part-0000.json"
+        payload = json.dumps({
+            "history": {
+                "columns": ["TRADEDATE", "CLOSE", "CURRENCYID"],
+                "data": [["2026-01-01", 100, "RUB"]],
+            }
+        }).encode()
+
+    expected_object = f"{run_prefix}/{filename}"
+    other_run_object = f"{base_prefix}/run_id=10/{filename}"
+
+    storage = Mock()
+
+    # Emulate object storage's actual string-prefix matching.
+    def list_objects(*, bucket: str, prefix: str):
+        return iter(
+            name
+            for name in [expected_object, other_run_object]
+            if name.startswith(prefix)
+        )
+
+    storage.list_objects.side_effect = list_objects
+    storage.get.return_value = payload
+
+    with patch("financial_data.staging.psycopg.connect") as connect:
+        connection = connect.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = (1,)
+
+        loader = loader_class(
+            run_id=1,
+            storage=storage,
+            bucket="raw",
+            prefix=supplied_prefix,
+            db_conn_str="unused",
+        )
+
+        metrics = loader.load()
+
+        # Loading run 10 as well would cause a second insertion.
+        assert cursor.executemany.call_count == 1
+
+    storage.get.assert_called_once_with(
+        bucket="raw",
+        object_name=expected_object,
+    )
+    assert metrics.run_id == 1
+    assert metrics.records_loaded == 1
