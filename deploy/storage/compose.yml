@@ -37,6 +37,54 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  minio:
+    image: ${MINIO_IMAGE:?Set MINIO_IMAGE}
+    user: "65532:65532"
+    restart: unless-stopped
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MinIO admin user}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MinIO admin password}
+
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+
+    ports:
+      - "${STORAGE_BIND_IP:?Set storage IP}:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+    volumes:
+      - type: bind
+        source: /srv/fdp/minio
+        target: /data
+        bind:
+          create_host_path: false
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  minio-init:
+    image: ${MINIO_CLIENT_IMAGE:?Set MINIO_CLIENT_IMAGE}
+    profiles: ["tools"]
+    restart: "no"
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MinIO admin user}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MinIO admin password}
+      MINIO_APP_USER: ${MINIO_APP_USER:?Set MinIO application user}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:?Set MinIO application password}
+
+    volumes:
+      - ./minio-init:/init:ro
+
+    entrypoint: ["/bin/sh", "/init/bootstrap.sh"]
+
 volumes:
   postgres_data:
     name: fdp-storage-postgres-data
