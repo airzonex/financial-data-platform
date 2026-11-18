@@ -1,0 +1,42 @@
+name: fdp-storage
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE}
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set admin password}
+      POSTGRES_DB: financial
+      FDP_APP_PASSWORD: ${FDP_APP_PASSWORD:?Set application password}
+      TZ: UTC
+
+    ports:
+      - "${STORAGE_BIND_IP:?Set storage IP}:5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - ../../postgres/init:/opt/fdp/schema:ro
+
+    shm_size: 128mb
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -U postgres -d financial
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+    name: fdp-storage-postgres-data
