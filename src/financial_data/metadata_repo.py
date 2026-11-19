@@ -244,3 +244,82 @@ class MetadataRepository:
                     f'Pipeline run {pipeline_run_id} was not finished, no rows to update'
                 )
 
+
+    def prepare_dataset_run(
+        self,
+        pipeline_run_id: int,
+        dataset: str,
+    ) -> DatasetRunInfo:
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            # serialize preparation for this pipeline run
+            cur.execute(
+                """
+                SELECT status
+                FROM metadata.pipeline_runs
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (pipeline_run_id,),
+            )
+            pipeline = cur.fetchone()
+
+            if pipeline is None:
+                raise ValueError(
+                    f"Pipeline run {pipeline_run_id} does not exist"
+                )
+
+            if pipeline[0] != "running":
+                raise ValueError(
+                    f"Pipeline run {pipeline_run_id} is not running"
+                )
+
+            cur.execute(
+                """
+                SELECT id, requested_start
+                FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                  AND dataset = %s
+                """,
+                (pipeline_run_id, dataset),
+            )
+            existing = cur.fetchall()
+
+            if len(existing) > 1:
+                raise ValueError(
+                    f"Multiple runs found for pipeline "
+                    f"{pipeline_run_id}, dataset {dataset}"
+                )
+
+            if existing:
+                run_id, requested_start = existing[0]
+            else:
+                requested_start = self.determine_date_start(dataset)
+
+                cur.execute(
+                    """
+                    INSERT INTO metadata.dataset_runs (
+                        pipeline_run_id,
+                        dataset,
+                        requested_start,
+                        status
+                    )
+                    VALUES (%s, %s, %s, 'running')
+                    RETURNING id
+                    """,
+                    (pipeline_run_id, dataset, requested_start),
+                )
+                row = cur.fetchone()
+
+                if row is None:
+                    raise RuntimeError("Failed to create dataset run")
+
+                run_id = row[0]
+
+        return DatasetRunInfo(
+            run_id=run_id,
+            requested_start=requested_start,
+            dataset=dataset,
+        )

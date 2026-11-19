@@ -3,7 +3,11 @@ import json
 
 import psycopg
 
-from financial_data.config import PIPELINE_NAME
+from financial_data.config import (
+    KEYRATE_DATASET,
+    PIPELINE_NAME,
+    RGBI_DATASET,
+)
 from financial_data.metadata_repo import MetadataRepository
 from financial_data.runtime import RuntimeSettings
 
@@ -51,20 +55,59 @@ def start_run() -> None:
     )
 
 
+def prepare_dataset(pipeline_run_id: int, dataset: str) -> None:
+    settings = RuntimeSettings.from_env()
+    repository = MetadataRepository(settings.database_conninfo())
+
+    result = repository.prepare_dataset_run(
+        pipeline_run_id=pipeline_run_id,
+        dataset=dataset,
+    )
+
+    print(
+        json.dumps(
+            {
+                "pipeline_run_id": pipeline_run_id,
+                "dataset_run_id": result.run_id,
+                "dataset": result.dataset,
+                "requested_start": result.requested_start.isoformat(),
+            }
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Financial Data Platform ETL commands"
     )
-    parser.add_argument(
-        "command",
-        choices=["check-connections", "start-run"],
+    commands = parser.add_subparsers(
+        dest="command",
+        required=True,
     )
+
+    commands.add_parser("check-connections")
+    commands.add_parser("start-run")
+
+    prepare_parser = commands.add_parser("prepare-dataset")
+    prepare_parser.add_argument(
+        "--pipeline-run-id",
+        type=int,
+        required=True,
+    )
+    prepare_parser.add_argument(
+        "--dataset",
+        choices=[RGBI_DATASET, KEYRATE_DATASET],
+        required=True,
+    )
+
     args = parser.parse_args()
 
     if args.command == "check-connections":
         check_connections()
     elif args.command == "start-run":
         start_run()
+    elif args.command == "prepare-dataset":
+        prepare_dataset(args.pipeline_run_id, args.dataset)
 
 
 if __name__ == "__main__":
