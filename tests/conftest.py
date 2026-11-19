@@ -94,7 +94,7 @@ def db_connection():
 
     return conn, cursor
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture(scope='session')
 def ensure_test_database() -> None:
     """
     Creates test database if not exists

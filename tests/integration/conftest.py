@@ -14,6 +14,11 @@ from financial_data.storage import MinioStorage
 from minio import Minio
 
 
+@pytest.fixture(scope="session", autouse=True)
+def prepare_integration_database(ensure_test_database) -> None:
+    pass
+
+
 @pytest.fixture
 def metadata_repo():
     from financial_data.metadata_repo import MetadataRepository
