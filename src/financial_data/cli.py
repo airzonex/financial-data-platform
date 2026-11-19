@@ -1,7 +1,10 @@
 import argparse
+import json
 
 import psycopg
 
+from financial_data.config import PIPELINE_NAME
+from financial_data.metadata_repo import MetadataRepository
 from financial_data.runtime import RuntimeSettings
 
 
@@ -30,18 +33,38 @@ def check_connections() -> None:
     print("CONNECTION_CHECK_PASSED", flush=True)
 
 
+def start_run() -> None:
+    settings = RuntimeSettings.from_env()
+    repository = MetadataRepository(settings.database_conninfo())
+
+    pipeline = repository.create_pipeline_run(
+        pipeline_name=PIPELINE_NAME,
+    )
+
+    print(
+        json.dumps(
+            {
+                "pipeline_run_id": pipeline.pipeline_run_id,
+                "pipeline_run_date": pipeline.pipeline_run_date.isoformat(),
+            }
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Financial Data Platform ETL commands"
     )
     parser.add_argument(
         "command",
-        choices=["check-connections"],
+        choices=["check-connections", "start-run"],
     )
     args = parser.parse_args()
 
     if args.command == "check-connections":
         check_connections()
+    elif args.command == "start-run":
+        start_run()
 
 
 if __name__ == "__main__":
