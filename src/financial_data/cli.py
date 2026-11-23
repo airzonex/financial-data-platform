@@ -23,7 +23,12 @@ def check_connections() -> None:
         conn.cursor() as cursor,
     ):
         cursor.execute("SELECT current_user, current_database()")
-        user, database = cursor.fetchone()
+        row = cursor.fetchone()
+
+        if row is None:
+            raise RuntimeError("PostgreSQL connection check returned no row")
+        
+        user, database = row
 
     print(f"POSTGRES_OK user={user} database={database}", flush=True)
 
