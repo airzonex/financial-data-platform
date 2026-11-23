@@ -323,3 +323,52 @@ class MetadataRepository:
             requested_start=requested_start,
             dataset=dataset,
         )
+
+
+    def get_ingestion_context(
+        self,
+        dataset_run_id: int,
+    ) -> tuple[PipelineInfo, DatasetRunInfo]:
+        query = """
+            SELECT p.id,
+                   p.started_at::date,
+                   p.status,
+                   d.dataset,
+                   d.requested_start,
+                   d.status
+            FROM metadata.dataset_runs d
+            JOIN metadata.pipeline_runs p
+              ON p.id = d.pipeline_run_id
+            WHERE d.id = %s
+        """
+
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(query, (dataset_run_id,))
+            row = cur.fetchone()
+
+        if row is None:
+            raise ValueError(
+                f"Dataset run {dataset_run_id} does not exist"
+            )
+
+        (
+            pipeline_id,
+            pipeline_date,
+            pipeline_status,
+            dataset,
+            requested_start,
+            dataset_status,
+        ) = row
+
+        if pipeline_status != "running" or dataset_status != "running":
+            raise ValueError(
+                f"Dataset run {dataset_run_id} and its pipeline must both be running"
+            )
+
+        return (
+            PipelineInfo(pipeline_id, pipeline_date),
+            DatasetRunInfo(dataset_run_id, requested_start, dataset),
+        )
