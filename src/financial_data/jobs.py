@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 
@@ -48,12 +49,16 @@ def ingest_dataset(
         step_type="ingestion",
     )
 
+    attempt_id = uuid4()
+
     try:
         logger.info(
-            "Starting ingestion: dataset=%s dataset_run_id=%s start=%s",
+            "Starting ingestion: dataset=%s dataset_run_id=%s "
+            "start=%s attempt_id=%s",
             dataset_run.dataset,
             dataset_run.run_id,
             dataset_run.requested_start,
+            attempt_id,
         )
 
         if dataset_run.dataset == KEYRATE_DATASET:
@@ -69,6 +74,7 @@ def ingest_dataset(
             result = keyrate_ingestion.run(
                 run_id=dataset_run.run_id,
                 run_date=pipeline.pipeline_run_date,
+                attempt_id=attempt_id,
             )
         else:
             with httpx.Client(timeout=30.0) as http_client:
@@ -85,6 +91,7 @@ def ingest_dataset(
                 result = rgbi_ingestion.run(
                     run_id=dataset_run.run_id,
                     run_date=pipeline.pipeline_run_date,
+                    attempt_id=attempt_id,
                 )
 
         repository.add_ingestion_metrics(result)

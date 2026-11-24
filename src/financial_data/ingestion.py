@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import date
+from uuid import UUID
 
 from financial_data.sources import CbrClient, MoexClient, MoexPage
 from financial_data.storage import MinioStorage
@@ -38,11 +39,21 @@ class CbrKeyrateIngestion:
             f'{object_prefix}/part-0000.html'
         )
 
-    def run(self, run_id: int, run_date: date) -> IngestionMetrics:
+    def run(
+        self,
+        run_id: int,
+        run_date: date,
+        *,
+        attempt_id: UUID | None = None,
+    ) -> IngestionMetrics:
         """
         CbrClient возвращает одну страницу html
         """
         object_prefix = self._get_object_prefix(run_id, run_date)
+
+        if attempt_id is not None:
+            object_prefix = f"{object_prefix}/attempt_id={attempt_id}"
+
         object_name = self._get_object_name(object_prefix)
 
         page: bytes = self.client.fetch_cbr_page()
@@ -88,8 +99,17 @@ class MoexRgbiIngestion:
             f'part-{part_number:04d}.json'
         )
 
-    def run(self, run_id: int, run_date: date) -> IngestionMetrics:
+    def run(
+        self,
+        run_id: int,
+        run_date: date,
+        *,
+        attempt_id: UUID | None = None,
+    ) -> IngestionMetrics:
         objects_prefix = self._get_objects_prefix(run_date, run_id)
+
+        if attempt_id is not None:
+            objects_prefix = f"{objects_prefix}/attempt_id={attempt_id}"
 
         start = 0
         objects_saved = 0

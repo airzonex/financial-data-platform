@@ -16,7 +16,8 @@ CBR
 """
 
 from datetime import date
-from unittest.mock import call
+from unittest.mock import Mock, call
+from uuid import UUID
 
 import pytest
 
@@ -26,6 +27,8 @@ from financial_data.ingestion import (
     MoexPage,
     MoexRgbiIngestion,
 )
+from financial_data.sources import MoexClient
+from financial_data.storage import MinioStorage
 
 BUCKET = 'raw'
 RUN_ID = 123
@@ -311,4 +314,65 @@ def test_moex_ingestion_propagates_client_error(
     storage.put.assert_not_called()
 
 
-    
+def test_rgbi_retry_uses_a_separate_raw_prefix() -> None:
+    client = Mock(spec=MoexClient)
+    storage = Mock(spec=MinioStorage)
+
+    first_page = MoexPage(
+        raw=b"first-attempt-page",
+        data={
+            "history.cursor": {
+                "data": [[0, 200, 100]],
+            }
+        },
+    )
+    retry_page = MoexPage(
+        raw=b"retry-page",
+        data={
+            "history.cursor": {
+                "data": [[0, 100, 100]],
+            }
+        },
+    )
+
+    # first attempt saves a page, then fails
+    # second attempt completes with a smaller source result
+    client.fetch_rgbi_page.side_effect = [
+        first_page,
+        RuntimeError("Source unavailable"),
+        retry_page,
+    ]
+
+    ingestion = MoexRgbiIngestion(
+        client=client,
+        storage=storage,
+        bucket="raw",
+    )
+
+    first_attempt = UUID("00000000-0000-0000-0000-000000000001")
+    second_attempt = UUID("00000000-0000-0000-0000-000000000002")
+
+    with pytest.raises(RuntimeError, match="Source unavailable"):
+        ingestion.run(
+            run_id=3,
+            run_date=date(2026, 11, 24),
+            attempt_id=first_attempt,
+        )
+
+    result = ingestion.run(
+        run_id=3,
+        run_date=date(2026, 11, 24),
+        attempt_id=second_attempt,
+    )
+
+    first_key, retry_key = [
+        call.kwargs["object_name"]
+        for call in storage.put.call_args_list
+    ]
+
+    assert f"/attempt_id={first_attempt}/" in first_key
+    assert f"/attempt_id={second_attempt}/" in retry_key
+
+    assert retry_key.startswith(f"{result.objects_prefix}/")
+    assert not first_key.startswith(f"{result.objects_prefix}/")
+    assert result.objects_saved == 1
