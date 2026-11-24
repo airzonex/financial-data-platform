@@ -4,6 +4,11 @@ from typing import Literal
 
 import psycopg
 
+from financial_data.config import (
+    KEYRATE_DATASET,
+    PIPELINE_NAME,
+    RGBI_DATASET,
+)
 from financial_data.ingestion import IngestionMetrics
 from financial_data.staging import StagingMetrics
 
@@ -424,3 +429,74 @@ class MetadataRepository:
             objects_prefix=prefix,
             objects_saved=objects_saved,
         )
+
+
+    def require_ready_for_dbt(
+        self,
+        pipeline_run_id: int,
+    ) -> None:
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT pipeline_name,
+                       status
+                  FROM metadata.pipeline_runs
+                 WHERE id = %s
+                """,
+                (pipeline_run_id,)
+            )
+            pipeline = cur.fetchone()
+
+            if pipeline is None:
+                raise ValueError(
+                    f"Pipeline run {pipeline_run_id} does not exist"
+                )
+
+            if pipeline != (PIPELINE_NAME, "running"):
+                raise ValueError(
+                    f"Pipeline run {pipeline_run_id} must belong to "
+                    f"{PIPELINE_NAME} and be running"
+                )
+
+            cur.execute(
+                """
+                SELECT d.dataset,
+                       d.status,
+                       d.records_loaded,
+                       s.status
+                FROM metadata.dataset_runs d
+                LEFT JOIN metadata.pipeline_steps s
+                  ON d.pipeline_run_id = s.pipeline_run_id
+                 AND s.step_name = 'staging_' || d.dataset
+                 AND s.step_type = 'staging'
+                WHERE d.pipeline_run_id = %s
+                """,
+                (pipeline_run_id,)
+            )
+            rows = cur.fetchall()
+
+        expected = {KEYRATE_DATASET, RGBI_DATASET}
+
+        if len(rows) != 2 or {row[0] for row in rows} != expected:
+            raise ValueError(
+                "Expected exactly one RGBI and one KEYRATE dataset run"
+            )
+
+        for dataset, dataset_status, records_loaded, staging_status in rows:
+            if dataset_status != "running":
+                raise ValueError(
+                    f"Dataset {dataset} is not running"
+                )
+
+            if staging_status != "success":
+                raise ValueError(
+                    f"Dataset {dataset} staging status is {staging_status}, it must be success"
+                )
+
+            if records_loaded is None or records_loaded <= 0:
+                raise ValueError(
+                    f"No staging rows recorded for dataset {dataset}"
+                )

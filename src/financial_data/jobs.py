@@ -1,4 +1,8 @@
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import httpx
 
@@ -181,3 +185,68 @@ def stage_dataset(
     )
 
     return result
+
+
+def build_dbt(
+    pipeline_run_id: int,
+    settings: RuntimeSettings,
+) -> None:
+    project_dir = Path(os.environ["DBT_PROJECT_DIR"])
+    profiles_dir = Path(os.environ["DBT_PROFILES_DIR"])
+
+    for required_file in (
+        project_dir / "dbt_project.yml",
+        profiles_dir / "profiles.yml",
+    ):
+        if not required_file.is_file():
+            raise FileNotFoundError(f"Missing dbt file {required_file}")
+
+    repository = MetadataRepository(settings.database_conninfo())
+    repository.require_ready_for_dbt(pipeline_run_id)
+
+    step_id = repository.start_pipeline_step(
+        pipeline_run_id=pipeline_run_id,
+        step_name="dbt_build",
+        step_type="transformation",
+    )
+
+    try:
+        logger.info(
+            "Starting dbt build: pipeline_run_id=%s",
+            pipeline_run_id,
+        )
+
+        subprocess.run(
+            [
+                "dbt",
+                "build",
+                "--project-dir",
+                str(project_dir),
+                "--profiles-dir",
+                str(profiles_dir),
+            ],
+            check=True,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        )
+
+        repository.finish_pipeline_step(
+            step_id=step_id,
+            status="success",
+        )
+    except Exception as exc:
+        try:
+            repository.finish_pipeline_step(
+                step_id=step_id,
+                status="error",
+                error=str(exc),
+            )
+        except Exception:
+            logger.exception("Could not record dbt failure")
+
+        raise
+
+    logger.info(
+        "dbt build finished: pipeline_run_id=%s",
+        pipeline_run_id,
+    )
