@@ -1,12 +1,14 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from uuid import uuid4
 
 import psycopg
 import pytest
 from config import TEST_DB_CONN_STR
 
 from financial_data.ingestion import IngestionMetrics
-from financial_data.metadata_repo import PipelineInfo
+from financial_data.metadata_repo import MetadataRepository, PipelineInfo
 from financial_data.staging import StagingMetrics
 
 PIPELINE_NAME = 'financial_test'
@@ -451,3 +453,53 @@ def test_add_staging_metrics_raises_when_no_dataset_run(metadata_repo) -> None:
         match=f'Metrics for {run_id} dataset run were not added'
     ):
         metadata_repo.add_staging_metrics(metrics)
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_request_key_creates_one_pipeline_run(concurrent: bool) -> None:
+    request_key = f"test-{uuid4()}"
+    repository = MetadataRepository(TEST_DB_CONN_STR)
+
+    def start():
+        return repository.get_or_create_pipeline_run(
+            pipeline_name=PIPELINE_NAME,
+            request_key=request_key,
+        )
+
+    try:
+        if concurrent:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(start) for _ in range(2)]
+                results = [future.result() for future in futures]
+        else:
+            results = [start(), start()]
+
+        assert results[0] == results[1]
+
+        with (
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM metadata.pipeline_runs
+                WHERE pipeline_name = %s
+                  AND request_key = %s
+                """,
+                (PIPELINE_NAME, request_key),
+            )
+            assert cur.fetchone() == (1,)
+    finally:
+        with (
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                DELETE FROM metadata.pipeline_runs
+                WHERE pipeline_name = %s
+                  AND request_key = %s
+                """,
+                (PIPELINE_NAME, request_key),
+            )

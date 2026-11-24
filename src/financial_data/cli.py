@@ -50,12 +50,13 @@ def check_connections() -> None:
     print("CONNECTION_CHECK_PASSED", flush=True)
 
 
-def start_run() -> None:
+def start_run(request_key: str) -> None:
     settings = RuntimeSettings.from_env()
     repository = MetadataRepository(settings.database_conninfo())
 
-    pipeline = repository.create_pipeline_run(
+    pipeline = repository.get_or_create_pipeline_run(
         pipeline_name=PIPELINE_NAME,
+        request_key=request_key,
     )
 
     print(
@@ -63,6 +64,7 @@ def start_run() -> None:
             {
                 "pipeline_run_id": pipeline.pipeline_run_id,
                 "pipeline_run_date": pipeline.pipeline_run_date.isoformat(),
+                "request_key": request_key,
             }
         )
     )
@@ -104,7 +106,12 @@ def main() -> None:
     )
 
     commands.add_parser("check-connections")
-    commands.add_parser("start-run")
+
+    start_parser = commands.add_parser("start-run")
+    start_parser.add_argument(
+        "--request-key",
+        required=True,
+    )
 
     prepare_parser = commands.add_parser("prepare-dataset")
     prepare_parser.add_argument(
@@ -151,7 +158,7 @@ def main() -> None:
     if args.command == "check-connections":
         check_connections()
     elif args.command == "start-run":
-        start_run()
+        start_run(args.request_key)
     elif args.command == "prepare-dataset":
         prepare_dataset(args.pipeline_run_id, args.dataset)
     elif args.command == "ingest":

@@ -650,3 +650,55 @@ class MetadataRepository:
             )
 
         return watermarks
+
+
+    def get_or_create_pipeline_run(
+        self,
+        pipeline_name: str,
+        request_key: str,
+    ) -> PipelineInfo:
+        if not request_key.strip():
+            raise ValueError("Request key must not be empty")
+
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                INSERT INTO metadata.pipeline_runs (
+                    pipeline_name,
+                    request_key,
+                    status
+                )
+                VALUES (%s, %s, 'running')
+                ON CONFLICT (pipeline_name, request_key) DO NOTHING
+                RETURNING id, started_at::date
+                """,
+                (pipeline_name, request_key),
+            )
+            row = cur.fetchone()
+
+            if row is None:
+                cur.execute(
+                    """
+                    SELECT id, started_at::date
+                    FROM metadata.pipeline_runs
+                    WHERE pipeline_name = %s
+                      AND request_key = %s
+                    """,
+                    (pipeline_name, request_key),
+                )
+                row = cur.fetchone()
+
+            if row is None:
+                raise RuntimeError(
+                    "Could not create or retrieve pipeline run"
+                )
+
+            pipeline = PipelineInfo(
+                pipeline_run_id=row[0],
+                pipeline_run_date=row[1],
+            )
+
+        return pipeline
