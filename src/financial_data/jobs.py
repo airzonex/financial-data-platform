@@ -250,3 +250,22 @@ def build_dbt(
         "dbt build finished: pipeline_run_id=%s",
         pipeline_run_id,
     )
+
+
+def finalize_pipeline(
+    pipeline_run_id: int,
+    settings: RuntimeSettings,
+) -> dict[str, str]:
+    repository = MetadataRepository(settings.database_conninfo())
+
+    watermarks = repository.finalize_successful_pipeline(pipeline_run_id)
+
+    logger.info(
+        "Pipeline finalized: pipeline_run_id=%s",
+        pipeline_run_id,
+    )
+
+    return {
+        dataset: watermark.isoformat()
+        for dataset, watermark in watermarks.items()
+    }

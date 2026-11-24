@@ -500,3 +500,153 @@ class MetadataRepository:
                 raise ValueError(
                     f"No staging rows recorded for dataset {dataset}"
                 )
+
+
+    def finalize_successful_pipeline(
+        self,
+        pipeline_run_id: int,
+    ) -> dict[str, date]:
+        watermark_queries = {
+            RGBI_DATASET: """
+                SELECT MAX(trade_date)
+                FROM int.rgbi_history
+                WHERE source_run_id = %s
+            """,
+            KEYRATE_DATASET: """
+                SELECT MAX(trade_date)
+                FROM int.keyrate_history
+                WHERE source_run_id = %s
+            """
+        }
+
+        expected_steps = {
+            "ingestion_rgbi",
+            "ingestion_keyrate",
+            "staging_rgbi",
+            "staging_keyrate",
+            "dbt_build",
+        }
+
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT pipeline_name, status
+                FROM metadata.pipeline_runs
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (pipeline_run_id,)
+            )
+            pipeline = cur.fetchone()
+
+            if pipeline is None:
+                raise ValueError(
+                    f"Pipeline run {pipeline_run_id} does not exist"
+                )
+
+            pipeline_name, pipeline_status = pipeline
+
+            if pipeline_name != PIPELINE_NAME:
+                raise ValueError("Unexpected pipeline name")
+
+            if pipeline_status not in ("running", "success"):
+                raise ValueError(
+                    f"Cannot finalize pipeline with status {pipeline_status}"
+                )
+
+            cur.execute(
+                """
+                SELECT step_name, status
+                FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_run_id,),
+            )
+            steps = cur.fetchall()
+
+            if (
+                len(steps) != len(expected_steps)
+                or {name for name, _ in steps} != expected_steps
+                or any(status != "success" for _, status in steps)
+            ):
+                raise ValueError(
+                    "All five expected pipeline steps must be successful"
+                )
+
+            cur.execute(
+                """
+                SELECT id, dataset, status, actual_max_date
+                FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                ORDER BY id
+                FOR UPDATE
+                """,
+                (pipeline_run_id,)
+            )
+            datasets = cur.fetchall()
+
+            if (
+                len(datasets) != 2
+                or {row[1] for row in datasets}
+                != {RGBI_DATASET, KEYRATE_DATASET}
+            ):
+                raise ValueError(
+                    "Expected exactly one run for each dataset"
+                )
+
+            watermarks: dict[str, date] = {}
+
+            # a retry after a successful commit returns persistent results
+            if pipeline_status == "success":
+                for _, dataset, status, actual_max_date in datasets:
+                    if status != "success" or actual_max_date is None:
+                        raise ValueError(
+                            "Completed pipeline has inconsistent dataset metadata"
+                        )
+                    watermarks[dataset] = actual_max_date
+
+                return watermarks
+
+            for run_id, dataset, status, _ in datasets:
+                if status != "running":
+                    raise ValueError(
+                        f"Dataset run {run_id} is not running"
+                    )
+
+                cur.execute(watermark_queries[dataset], (run_id,))
+                row = cur.fetchone()
+
+                if row is None or row[0] is None:
+                    raise ValueError(
+                        f"No transformed data found for dataset run {run_id}"
+                    )
+
+                watermarks[dataset] = row[0]
+
+            # both watermarks have been validated before updating anything
+            for run_id, dataset, _, _ in datasets:
+                cur.execute(
+                    """
+                    UPDATE metadata.dataset_runs
+                       SET status = 'success',
+                           actual_max_date = %s
+                     WHERE id = %s
+                    """,
+                    (watermarks[dataset], run_id),
+                )
+
+            cur.execute(
+                """
+                UPDATE metadata.pipeline_runs
+                   SET status = 'success',
+                       finished_at = now(),
+                       error = NULL
+                 WHERE id = %s
+                """,
+                (pipeline_run_id,),
+            )
+
+        return watermarks

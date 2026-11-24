@@ -10,7 +10,12 @@ from financial_data.config import (
     PIPELINE_NAME,
     RGBI_DATASET,
 )
-from financial_data.jobs import build_dbt, ingest_dataset, stage_dataset
+from financial_data.jobs import (
+    build_dbt,
+    finalize_pipeline,
+    ingest_dataset,
+    stage_dataset,
+)
 from financial_data.metadata_repo import MetadataRepository
 from financial_data.runtime import RuntimeSettings
 
@@ -134,6 +139,13 @@ def main() -> None:
         required=True,
     )
 
+    finalize_parser = commands.add_parser("finalize")
+    finalize_parser.add_argument(
+        "--pipeline-run-id",
+        type=int,
+        required=True
+    )
+
     args = parser.parse_args()
 
     if args.command == "check-connections":
@@ -168,6 +180,20 @@ def main() -> None:
                 }
             )
         )
+    elif args.command == "finalize":
+        watermarks = finalize_pipeline(
+            pipeline_run_id=args.pipeline_run_id,
+            settings=RuntimeSettings.from_env(),
+        )
+        print(json.dumps(
+            {
+                "pipeline_run_id": args.pipeline_run_id,
+                "status": "success",
+                "watermarks": watermarks,
+            }
+        )
+    )
+
 
 
 if __name__ == "__main__":
