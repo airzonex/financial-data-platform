@@ -24,6 +24,10 @@ RUN python -m pip install --no-cache-dir . \
 
 COPY --chown=fdp:fdp dbt/financial_data /app/dbt/financial_data
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 USER fdp
 
 CMD ["python", "--version"]
