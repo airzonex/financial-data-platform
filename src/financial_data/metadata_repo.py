@@ -372,3 +372,55 @@ class MetadataRepository:
             PipelineInfo(pipeline_id, pipeline_date),
             DatasetRunInfo(dataset_run_id, requested_start, dataset),
         )
+
+
+    def get_staging_input(
+        self,
+        dataset_run_id: int,
+    ) -> IngestionMetrics:
+        query = """
+        SELECT r.minio_bucket,
+               r.minio_prefix,
+               r.objects_saved,
+               s.status
+          FROM metadata.dataset_runs r
+          LEFT JOIN metadata.pipeline_steps s
+            ON s.pipeline_run_id = r.pipeline_run_id
+           AND s.step_type = 'ingestion'
+           AND s.step_name = 'ingestion_' || r.dataset
+         WHERE r.id = %s
+        """
+
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(query, (dataset_run_id,))
+            row = cur.fetchone()
+
+        if row is None:
+            raise ValueError(f"Dataset run {dataset_run_id} does not exist")
+
+        bucket, prefix, objects_saved, ingestion_status = row
+
+        if ingestion_status != "success":
+            raise ValueError(
+                f"Ingestion has not succeeded for dataset run {dataset_run_id}"
+            )
+
+        if not bucket or not prefix or objects_saved is None:
+            raise ValueError(
+                f"Ingestion metadata is incomplete for dataset run {dataset_run_id}"
+            )
+
+        if objects_saved <= 0:
+            raise ValueError(
+                f"No raw objects available for dataset run {dataset_run_id}"
+            )
+
+        return IngestionMetrics(
+            run_id=dataset_run_id,
+            bucket=bucket,
+            objects_prefix=prefix,
+            objects_saved=objects_saved,
+        )

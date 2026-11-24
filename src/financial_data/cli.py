@@ -10,7 +10,7 @@ from financial_data.config import (
     PIPELINE_NAME,
     RGBI_DATASET,
 )
-from financial_data.jobs import ingest_dataset
+from financial_data.jobs import ingest_dataset, stage_dataset
 from financial_data.metadata_repo import MetadataRepository
 from financial_data.runtime import RuntimeSettings
 
@@ -120,6 +120,13 @@ def main() -> None:
         required=True,
     )
 
+    stage_parser = commands.add_parser("stage")
+    stage_parser.add_argument(
+        "--dataset-run-id",
+        type=int,
+        required=True
+    )
+
     args = parser.parse_args()
 
     if args.command == "check-connections":
@@ -129,11 +136,17 @@ def main() -> None:
     elif args.command == "prepare-dataset":
         prepare_dataset(args.pipeline_run_id, args.dataset)
     elif args.command == "ingest":
-        result = ingest_dataset(
+        ingest_result = ingest_dataset(
             dataset_run_id=args.dataset_run_id,
             settings=RuntimeSettings.from_env(),
         )
-        print(json.dumps(asdict(result)))
+        print(json.dumps(asdict(ingest_result)))
+    elif args.command == "stage":
+        stage_result = stage_dataset(
+            dataset_run_id=args.dataset_run_id,
+            settings=RuntimeSettings.from_env(),
+        )
+        print(json.dumps(asdict(stage_result)))
 
 
 if __name__ == "__main__":

@@ -17,6 +17,11 @@ from financial_data.ingestion import (
 from financial_data.metadata_repo import MetadataRepository
 from financial_data.runtime import RuntimeSettings
 from financial_data.sources import CbrClient, MoexClient
+from financial_data.staging import (
+    KeyrateStagingLoader,
+    RgbiStagingLoader,
+    StagingMetrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +105,79 @@ def ingest_dataset(
         "Ingestion finished: dataset_run_id=%s objects_saved=%s",
         result.run_id,
         result.objects_saved,
+    )
+
+    return result
+
+
+def stage_dataset(
+    dataset_run_id: int,
+    settings: RuntimeSettings,
+) -> StagingMetrics:
+    connection_str = settings.database_conninfo()
+    repository = MetadataRepository(connection_str)
+
+    # this lookup also checks that both runs are still running
+    pipeline, dataset_run = repository.get_ingestion_context(dataset_run_id)
+    ingestion = repository.get_staging_input(dataset_run_id)
+
+    loader_class: type[KeyrateStagingLoader | RgbiStagingLoader]
+
+    if dataset_run.dataset == KEYRATE_DATASET:
+        loader_class = KeyrateStagingLoader
+    elif dataset_run.dataset == RGBI_DATASET:
+        loader_class = RgbiStagingLoader
+    else:
+        raise ValueError(f"Unsupported dataset {dataset_run_id}")
+
+    loader = loader_class(
+        run_id=dataset_run_id,
+        storage=settings.create_storage(),
+        bucket=ingestion.bucket,
+        prefix=ingestion.objects_prefix,
+        db_conn_str=connection_str,
+    )
+
+    step_id = repository.start_pipeline_step(
+        pipeline_run_id=pipeline.pipeline_run_id,
+        step_name=f"staging_{dataset_run.dataset}",
+        step_type="staging",
+    )
+
+    try:
+        logger.info(
+            "Starting staging: dataset=%s dataset_run_id=%s",
+            dataset_run.dataset,
+            dataset_run_id,
+        )
+
+        result = loader.load()
+
+        if result.records_loaded <= 0:
+            raise ValueError(f"No staging rows loaded for dataset run {dataset_run_id}")
+
+        repository.add_staging_metrics(result)
+        repository.finish_pipeline_step(
+            step_id=step_id,
+            status="success",
+            records_out=result.records_loaded,
+        )
+    except Exception as exc:
+        try:
+            repository.finish_pipeline_step(
+                step_id=step_id,
+                status="error",
+                error=str(exc),
+            )
+        except Exception:
+            logger.exception("Could not record staging failure")
+
+        raise
+
+    logger.info(
+        "Staging finished: dataset_run_id=%s records_loaded=%s",
+        dataset_run_id,
+        result.records_loaded,
     )
 
     return result
