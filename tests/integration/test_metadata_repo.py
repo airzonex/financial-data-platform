@@ -632,3 +632,152 @@ def test_step_claim_retry_and_completed_step() -> None:
                 """,
                 (pipeline_id,),
             )
+
+
+def test_ingestion_completion_is_atomic_and_rejects_stale_attempt() -> None:
+    repository = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline = repository.get_or_create_pipeline_run(
+        pipeline_name=PIPELINE_NAME,
+        request_key=f"test-ingestion-completion-{uuid4()}",
+    )
+    pipeline_id = pipeline.pipeline_run_id
+
+    try:
+        dataset_id = repository.create_dataset_run(
+            pipeline_run_id=pipeline_id,
+            dataset="rgbi",
+            requested_start=date(2014, 1, 1),
+        )
+
+        first = repository.claim_pipeline_step(
+            pipeline_id,
+            "ingestion_rgbi",
+            "ingestion",
+        )
+        assert first.attempt_id is not None
+
+        repository.finish_claimed_step(
+            step_id=first.step_id,
+            attempt_id=first.attempt_id,
+            status="error",
+            error="Temporary failure",
+        )
+
+        second = repository.claim_pipeline_step(
+            pipeline_id,
+            "ingestion_rgbi",
+            "ingestion",
+        )
+        assert second.attempt_id is not None
+
+        valid_result = IngestionMetrics(
+            run_id=dataset_id,
+            bucket="raw",
+            objects_prefix=f"test/attempt_id={second.attempt_id}",
+            objects_saved=2,
+        )
+
+        # as old attempt cannot publish its result
+        with pytest.raises(ValueError, match="not running"):
+            repository.complete_ingestion(
+                step_id=first.step_id,
+                attempt_id=first.attempt_id,
+                result=valid_result,
+            )
+
+        # a mismatched dataset must roll back the step's success update
+        invalid_result = IngestionMetrics(
+            run_id=-1,
+            bucket="raw",
+            objects_prefix="test/invalid",
+            objects_saved=2,
+        )
+
+        with pytest.raises(ValueError, match="does not match"):
+            repository.complete_ingestion(
+                step_id=second.step_id,
+                attempt_id=second.attempt_id,
+                result=invalid_result,
+            )
+
+        with (
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT status, finished_at
+                FROM metadata.pipeline_steps
+                WHERE id = %s
+                """,
+                (second.step_id,),
+            )
+            assert cur.fetchone() == ('running', None)
+
+            cur.execute(
+                """
+                SELECT minio_bucket, minio_prefix, objects_saved
+                FROM metadata.dataset_runs
+                WHERE id = %s
+                """,
+                (dataset_id,),
+            )
+            assert cur.fetchone() == (None, None, None)
+
+        repository.complete_ingestion(
+            step_id=second.step_id,
+            attempt_id=second.attempt_id,
+            result=valid_result,
+        )
+
+        with (
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT s.status,
+                       d.minio_bucket,
+                       d.minio_prefix,
+                       d.objects_saved
+                FROM metadata.pipeline_steps s
+                JOIN metadata.dataset_runs d
+                  ON s.pipeline_run_id = d.pipeline_run_id
+                WHERE s.id = %s
+                  AND d.id = %s
+                """,
+                (second.step_id, dataset_id),
+            )
+            assert cur.fetchone() == (
+                "success",
+                valid_result.bucket,
+                valid_result.objects_prefix,
+                valid_result.objects_saved
+            )
+
+    finally:
+        with(
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            cur.execute(
+                """
+                DELETE FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            cur.execute(
+                """
+                DELETE FROM metadata.pipeline_runs
+                WHERE id = %s
+                """,
+                (pipeline_id,),
+            )

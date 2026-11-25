@@ -887,3 +887,73 @@ class MetadataRepository:
                     f"Step {step_id} is not running under "
                     f"attempt {attempt_id}"
                 )
+
+
+    def complete_ingestion(
+        self,
+        step_id: int,
+        attempt_id: UUID,
+        result: IngestionMetrics,
+    ) -> None:
+        if not result.bucket or not result.objects_prefix:
+            raise ValueError("Missing ingestion storage location")
+
+        if result.objects_saved < 0:
+            raise ValueError("Object count cannot be negative")
+
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            # validate ownership and reserve this step's completion
+            cur.execute(
+                """
+                UPDATE metadata.pipeline_steps
+                SET status = 'success',
+                    finished_at = now(),
+                    error = NULL
+                WHERE id = %s
+                  AND attempt_id = %s
+                  AND status = 'running'
+                  AND step_type = 'ingestion'
+                RETURNING pipeline_run_id, step_name
+                """,
+                (step_id, attempt_id),
+            )
+            step = cur.fetchone()
+
+            if step is None:
+                raise ValueError(
+                    f"Ingestion step {step_id} is not running "
+                    f"under attempt {attempt_id}"
+                )
+
+            pipeline_run_id, step_name = step
+
+            # ensure the result belongs to this step's dataset and pipeline
+            cur.execute(
+                """
+                UPDATE metadata.dataset_runs
+                SET minio_bucket = %s,
+                    minio_prefix = %s,
+                    objects_saved = %s
+                WHERE id = %s
+                  AND pipeline_run_id = %s
+                  AND 'ingestion_' || dataset = %s
+                  AND status = 'running'
+                """,
+                (
+                    result.bucket,
+                    result.objects_prefix,
+                    result.objects_saved,
+                    result.run_id,
+                    pipeline_run_id,
+                    step_name
+                ),
+            )
+
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f"Dataset run {result.run_id} does not match "
+                    f"running ingestion step {step_id}"
+                )
