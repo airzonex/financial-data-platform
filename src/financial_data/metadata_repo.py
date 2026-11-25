@@ -340,6 +340,8 @@ class MetadataRepository:
     def get_ingestion_context(
         self,
         dataset_run_id: int,
+        *,
+        allow_completed: bool = False,
     ) -> tuple[PipelineInfo, DatasetRunInfo]:
         query = """
             SELECT p.id,
@@ -375,9 +377,22 @@ class MetadataRepository:
             dataset_status,
         ) = row
 
-        if pipeline_status != "running" or dataset_status != "running":
+        both_running = (
+            pipeline_status == "running"
+            and dataset_status == "running"
+        )
+        both_completed = (
+            pipeline_status == "success"
+            and dataset_status == "success"
+        )
+
+        if not (
+            both_running
+            or (allow_completed and both_completed)
+        ):
             raise ValueError(
-                f"Dataset run {dataset_run_id} and its pipeline must both be running"
+                f"Dataset run {dataset_run_id} and its pipeline "
+                "are not in an allowed state"
             )
 
         return (
@@ -386,7 +401,7 @@ class MetadataRepository:
         )
 
 
-    def get_staging_input(
+    def get_completed_ingestion(
         self,
         dataset_run_id: int,
     ) -> IngestionMetrics:
@@ -425,10 +440,8 @@ class MetadataRepository:
                 f"Ingestion metadata is incomplete for dataset run {dataset_run_id}"
             )
 
-        if objects_saved <= 0:
-            raise ValueError(
-                f"No raw objects available for dataset run {dataset_run_id}"
-            )
+        if objects_saved < 0:
+            raise ValueError("Recorded object count cannot be negative")
 
         return IngestionMetrics(
             run_id=dataset_run_id,
@@ -436,6 +449,20 @@ class MetadataRepository:
             objects_prefix=prefix,
             objects_saved=objects_saved,
         )
+
+
+    def get_staging_input(
+        self,
+        dataset_run_id: int,
+    ) -> IngestionMetrics:
+        result = self.get_completed_ingestion(dataset_run_id)
+
+        if result.objects_saved == 0:
+            raise ValueError(
+                f"No raw objects available for dataset run {dataset_run_id}"
+            )
+
+        return result
 
 
     def require_ready_for_dbt(

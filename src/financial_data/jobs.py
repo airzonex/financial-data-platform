@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from uuid import uuid4
 
 import httpx
 
@@ -36,22 +35,39 @@ def ingest_dataset(
     settings: RuntimeSettings
 ) -> IngestionMetrics:
     repository = MetadataRepository(settings.database_conninfo())
-    pipeline, dataset_run = repository.get_ingestion_context(dataset_run_id)
+
+    pipeline, dataset_run = repository.get_ingestion_context(
+        dataset_run_id,
+        allow_completed=True,
+    )
 
     if dataset_run.dataset not in (KEYRATE_DATASET, RGBI_DATASET):
         raise ValueError(f"Unsupported dataset: {dataset_run.dataset}")
 
-    storage = settings.create_storage()
-
-    step_id = repository.start_pipeline_step(
+    claim = repository.claim_pipeline_step(
         pipeline_run_id=pipeline.pipeline_run_id,
         step_name=f"ingestion_{dataset_run.dataset}",
         step_type="ingestion",
     )
 
-    attempt_id = uuid4()
+    if claim.already_completed:
+        result = repository.get_completed_ingestion(dataset_run_id)
+
+        logger.info(
+            "Reusing completed ingestion: dataset_run_id=%s",
+            dataset_run_id,
+        )
+
+        return result
+
+    attempt_id = claim.attempt_id
+
+    if attempt_id is None:
+        raise RuntimeError("An executable claim must have an attempt ID")
 
     try:
+        storage = settings.create_storage()
+
         logger.info(
             "Starting ingestion: dataset=%s dataset_run_id=%s "
             "start=%s attempt_id=%s",
@@ -94,16 +110,17 @@ def ingest_dataset(
                     attempt_id=attempt_id,
                 )
 
-        repository.add_ingestion_metrics(result)
-        repository.finish_pipeline_step(
-            step_id=step_id,
-            status="success",
+        repository.complete_ingestion(
+            step_id=claim.step_id,
+            attempt_id=attempt_id,
+            result=result,
         )
 
     except Exception as exc:
         try:
-            repository.finish_pipeline_step(
-                step_id=step_id,
+            repository.finish_claimed_step(
+                step_id=claim.step_id,
+                attempt_id=attempt_id,
                 status="error",
                 error=str(exc)
             )
