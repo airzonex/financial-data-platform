@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Literal
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import psycopg
@@ -9,7 +10,9 @@ import pytest
 from config import TEST_DB_CONN_STR
 
 from financial_data.ingestion import IngestionMetrics
+from financial_data.jobs import ingest_dataset
 from financial_data.metadata_repo import MetadataRepository, PipelineInfo
+from financial_data.runtime import RuntimeSettings
 from financial_data.staging import StagingMetrics
 
 PIPELINE_NAME = 'financial_test'
@@ -779,5 +782,138 @@ def test_ingestion_completion_is_atomic_and_rejects_stale_attempt() -> None:
                 DELETE FROM metadata.pipeline_runs
                 WHERE id = %s
                 """,
+                (pipeline_id,),
+            )
+
+
+def test_ingestion_job_retries_failed_attempt() -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+
+    settings = Mock(spec=RuntimeSettings)
+    settings.database_conninfo.return_value = TEST_DB_CONN_STR
+
+    pipeline = repo.get_or_create_pipeline_run(
+        PIPELINE_NAME,
+        f"test-ingestion-retry-{uuid4()}",
+    )
+    pipeline_id = pipeline.pipeline_run_id
+
+    attempted_prefixes: list[str] = []
+
+    try:
+        dataset = repo.prepare_dataset_run(pipeline_id, "keyrate")
+        dataset_id = dataset.run_id
+
+        def simulate_ingestion(
+            *args,
+            attempt_id,
+            **kwargs,
+        ) -> IngestionMetrics:
+            prefix = (
+                f"cbr/keyrate/run_id={dataset_id}"
+                f"/attempt_id={attempt_id}"
+            )
+            attempted_prefixes.append(prefix)
+
+            if len(attempted_prefixes) == 1:
+                raise RuntimeError("Simulated ingestion failure")
+
+            return IngestionMetrics(
+                run_id=dataset_id,
+                bucket="raw",
+                objects_prefix=prefix,
+                objects_saved=1,
+            )
+
+        with (
+            patch("financial_data.jobs.CbrClient"),
+            patch(
+                "financial_data.jobs.CbrKeyrateIngestion.run",
+                side_effect=simulate_ingestion,
+            ) as ingestion_run,
+        ):
+            # first attempt fails
+            with pytest.raises(
+                RuntimeError,
+                match="Simulated ingestion failure",
+            ):
+                ingest_dataset(dataset_id, settings)
+
+            with psycopg.connect(TEST_DB_CONN_STR) as conn:
+                failed_step = conn.execute(
+                    """
+                    SELECT status, attempt_id, attempt_count, error
+                    FROM metadata.pipeline_steps
+                    WHERE pipeline_run_id = %s
+                      AND step_name = 'ingestion_keyrate'
+                    """,
+                    (pipeline_id,),
+                ).fetchone()
+
+                unpublished = conn.execute(
+                    """
+                    SELECT minio_bucket, minio_prefix, objects_saved
+                    FROM metadata.dataset_runs
+                    WHERE id = %s
+                    """,
+                    (dataset_id,),
+                ).fetchone()
+
+            assert failed_step is not None
+            assert failed_step[0] == "error"
+            assert failed_step[1] is not None
+            assert failed_step[2] == 1
+            assert "Simulated ingestion failure" in failed_step[3]
+            assert unpublished == (None, None, None)
+
+            # retry succeeds under a new attempt
+            result = ingest_dataset(dataset_id, settings)
+
+            with psycopg.connect(TEST_DB_CONN_STR) as conn:
+                completed_step = conn.execute(
+                    """
+                    SELECT status, attempt_id, attempt_count, error
+                    FROM metadata.pipeline_steps
+                    WHERE pipeline_run_id = %s
+                        AND step_name = 'ingestion_keyrate'
+                    """,
+                    (pipeline_id,),
+                ).fetchone()
+
+            assert completed_step is not None
+            assert completed_step[0] == "success"
+            assert completed_step[1] != failed_step[1]
+            assert completed_step[2] == 2
+            assert completed_step[3] is None
+
+            assert len(attempted_prefixes) == 2
+            assert attempted_prefixes[0] != attempted_prefixes[1]
+            assert result.objects_prefix == attempted_prefixes[1]
+            assert repo.get_completed_ingestion(dataset_id) == result
+
+            # repeating a completed operation reuses its result
+            repeated_result = ingest_dataset(dataset_id, settings)
+
+            assert repeated_result == result
+            assert ingestion_run.call_count == 2
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            conn.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                "DELETE FROM metadata.pipeline_runs WHERE id = %s",
                 (pipeline_id,),
             )
