@@ -63,3 +63,7 @@ ALTER TABLE metadata.pipeline_runs
 
 CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_request_key_uq
     ON metadata.pipeline_runs (pipeline_name, request_key);
+
+ALTER TABLE metadata.pipeline_steps
+    ADD COLUMN IF NOT EXISTS attempt_id uuid,
+    ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;

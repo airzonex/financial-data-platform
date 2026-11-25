@@ -503,3 +503,96 @@ def test_request_key_creates_one_pipeline_run(concurrent: bool) -> None:
                 """,
                 (PIPELINE_NAME, request_key),
             )
+
+
+def test_step_claim_retry_and_completed_step() -> None:
+    repository = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline = repository.get_or_create_pipeline_run(
+        pipeline_name=PIPELINE_NAME,
+        request_key=f"test-claim-{uuid4()}",
+    )
+    pipeline_id = pipeline.pipeline_run_id
+
+    try:
+        first = repository.claim_pipeline_step(
+            pipeline_id,
+            "ingestion_rgbi",
+            "ingestion",
+        )
+
+        assert not first.already_completed
+        assert first.attempt_id is not None
+
+        # a running step cannot be claimed again
+        with pytest.raises(ValueError, match="already running"):
+            repository.claim_pipeline_step(
+                pipeline_id,
+                "ingestion_rgbi",
+                "ingestion",
+            )
+
+        # simulate the first attempt reporting failure
+        repository.finish_pipeline_step(
+            step_id=first.step_id,
+            status="error",
+            error="Temporary source failure",
+        )
+
+        second = repository.claim_pipeline_step(
+            pipeline_id,
+            "ingestion_rgbi",
+            "ingestion",
+        )
+
+        assert second.step_id == first.step_id
+        assert second.attempt_id is not None
+        assert second.attempt_id != first.attempt_id
+        assert not second.already_completed
+
+        repository.finish_pipeline_step(
+            step_id=second.step_id,
+            status="success",
+        )
+
+        completed = repository.claim_pipeline_step(
+            pipeline_id,
+            "ingestion_rgbi",
+            "ingestion",
+        )
+
+        assert completed.step_id == first.step_id
+        assert completed.already_completed
+        assert completed.attempt_id is None
+
+        with (
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT status, attempt_count
+                FROM metadata.pipeline_steps
+                WHERE id = %s
+                """,
+                (first.step_id,),
+            )
+            assert cur.fetchone() == ("success", 2)
+
+    finally:
+        with (
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            cur.execute(
+                """
+                DELETE FROM metadata.pipeline_runs WHERE id = %s
+                """,
+                (pipeline_id,),
+            )

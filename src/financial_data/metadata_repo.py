@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
+from uuid import UUID, uuid4
 
 import psycopg
 
@@ -30,6 +31,12 @@ class DatasetRunInfo:
     run_id: int
     requested_start: date
     dataset: str
+
+@dataclass
+class StepClaim:
+    step_id: int
+    attempt_id: UUID | None
+    already_completed: bool
 
 
 class MetadataRepository:
@@ -702,3 +709,134 @@ class MetadataRepository:
             )
 
         return pipeline
+
+
+    def claim_pipeline_step(
+        self,
+        pipeline_run_id: int,
+        step_name: str,
+        step_type: Literal["ingestion", "staging", "transformation"],
+    ) -> StepClaim:
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            # serialize claim decisions within this pipeline
+            cur.execute(
+                """
+                SELECT status
+                FROM metadata.pipeline_runs
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (pipeline_run_id,)
+            )
+            pipeline = cur.fetchone()
+
+            if pipeline is None:
+                raise ValueError(
+                    f"Pipeline run {pipeline_run_id} does not exist"
+                )
+
+            pipeline_status = pipeline[0]
+
+            if pipeline_status not in ("running", "success"):
+                raise ValueError(
+                    f"Cannot claim a step in pipeline status {pipeline_status}"
+                )
+
+            cur.execute(
+                """
+                SELECT id, step_type, status
+                FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                  AND step_name = %s
+                FOR UPDATE
+                """,
+                (pipeline_run_id, step_name),
+            )
+            step = cur.fetchone()
+
+            if step is not None:
+                step_id, stored_type, status = step
+
+                if stored_type != step_type:
+                    raise ValueError(
+                        f"Step type mismatch for {step_name}"
+                    )
+
+                if status == "success":
+                    return StepClaim(
+                        step_id=step_id,
+                        attempt_id=None,
+                        already_completed=True,
+                    )
+
+            if pipeline_status == "success":
+                raise ValueError(
+                    "Cannot execute a step in a completed pipeline"
+                )
+
+            attempt_id = uuid4()
+
+            if step is None:
+                cur.execute(
+                    """
+                    INSERT INTO metadata.pipeline_steps (
+                        pipeline_run_id,
+                        step_name,
+                        step_type,
+                        status,
+                        attempt_id,
+                        attempt_count
+                    )
+                    VALUES (%s, %s, %s, 'running', %s, 1)
+                    RETURNING id
+                    """,
+                    (
+                        pipeline_run_id,
+                        step_name,
+                        step_type,
+                        attempt_id
+                    ),
+                )
+                inserted = cur.fetchone()
+
+                if inserted is None:
+                    raise RuntimeError("Failed to create step")
+
+                step_id = inserted[0]
+            else:
+                step_id, _, status = step
+
+                if status == "running":
+                    raise ValueError(
+                        f"Step {step_name} is already running"
+                    )
+
+                if status != "error":
+                    raise ValueError(
+                        f"Cannot retry step with status {status}"
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE metadata.pipeline_steps
+                    SET status = 'running',
+                        attempt_id = %s,
+                        attempt_count = attempt_count + 1,
+                        started_at = now(),
+                        finished_at = NULL,
+                        error = NULL,
+                        records_in = NULL,
+                        records_out = NULL
+                    WHERE id = %s
+                    """,
+                    (attempt_id, step_id),
+                )
+
+        return StepClaim(
+            step_id=step_id,
+            attempt_id=attempt_id,
+            already_completed=False,
+        )
