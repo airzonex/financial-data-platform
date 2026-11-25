@@ -840,3 +840,50 @@ class MetadataRepository:
             attempt_id=attempt_id,
             already_completed=False,
         )
+
+
+    def finish_claimed_step(
+        self,
+        step_id: int,
+        attempt_id: UUID,
+        status: Literal["success", "error"],
+        records_in: int | None = None,
+        records_out: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        if status not in ("success", "error"):
+            raise ValueError(f"Invalid completion status: {status}")
+
+        query = """
+            UPDATE metadata.pipeline_steps
+            SET status = %s,
+                records_in = %s,
+                records_out = %s,
+                error = %s,
+                finished_at = now()
+            WHERE id = %s
+              AND attempt_id = %s
+              AND status = 'running'
+        """
+
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                query,
+                (
+                    status,
+                    records_in,
+                    records_out,
+                    error,
+                    step_id,
+                    attempt_id,
+                ),
+            )
+
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f"Step {step_id} is not running under "
+                    f"attempt {attempt_id}"
+                )

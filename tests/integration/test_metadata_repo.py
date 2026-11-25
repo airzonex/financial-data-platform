@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from typing import Literal
 from uuid import uuid4
 
 import psycopg
@@ -532,8 +533,9 @@ def test_step_claim_retry_and_completed_step() -> None:
             )
 
         # simulate the first attempt reporting failure
-        repository.finish_pipeline_step(
+        repository.finish_claimed_step(
             step_id=first.step_id,
+            attempt_id=first.attempt_id,
             status="error",
             error="Temporary source failure",
         )
@@ -549,8 +551,42 @@ def test_step_claim_retry_and_completed_step() -> None:
         assert second.attempt_id != first.attempt_id
         assert not second.already_completed
 
-        repository.finish_pipeline_step(
+        # the old attempt cannot complete or fail the new attempt
+        stale_statuses: tuple[
+            Literal["success", "error"], ...
+        ] = ("success", "error")
+
+        for stale_status in stale_statuses:
+            with pytest.raises(ValueError, match="not running under"):
+                repository.finish_claimed_step(
+                    step_id=first.step_id,
+                    attempt_id=first.attempt_id,
+                    status=stale_status,
+                )
+
+        # rejected updates must leave the new attempt unchanged
+        with(
+            psycopg.connect(TEST_DB_CONN_STR) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT status, attempt_id, attempt_count, finished_at
+                FROM metadata.pipeline_steps
+                WHERE id = %s
+                """,
+                (second.step_id,),
+            )
+            assert cur.fetchone() == (
+                'running',
+                second.attempt_id,
+                2,
+                None,
+            )
+
+        repository.finish_claimed_step(
             step_id=second.step_id,
+            attempt_id=second.attempt_id,
             status="success",
         )
 
