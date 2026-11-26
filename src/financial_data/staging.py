@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from bs4 import BeautifulSoup
@@ -44,7 +45,10 @@ class KeyrateStagingLoader:
             f'Expected exactly one object under {self.bucket}/{self.prefix}'
         )
 
-    def _parse_raw_bytes(self, raw_bytes: bytes) -> tuple[tuple[int, str, str], ...]:
+    def _parse_raw_bytes(
+        self,
+        raw_bytes: bytes
+    ) -> list[tuple[int, str, str]]:
         html = raw_bytes.decode(encoding='utf-8')
         
         soup = BeautifulSoup(html, 'html.parser')
@@ -68,7 +72,7 @@ class KeyrateStagingLoader:
                 'Table is empty or has an invalid format'
             )
 
-        return tuple(data)
+        return data
 
 
     def _clear_history(self, cur) -> None:
@@ -96,8 +100,22 @@ class KeyrateStagingLoader:
         )
 
 
-    def load(self) -> StagingMetrics:
+    def read_rows(self) -> list[tuple[int, str, str]]:
+        object_name = self._get_single_object_name()
 
+        raw_bytes = self.storage.get(
+            bucket=self.bucket,
+            object_name=object_name
+        )
+
+        return self._parse_raw_bytes(raw_bytes)
+
+
+    def write_rows(
+        self,
+        cur: psycopg.Cursor,
+        rows: list[tuple[int, str, str]],
+    ) -> StagingMetrics:
         insert_query = """
             INSERT INTO stg.keyrate_history(
                 run_id,
@@ -106,19 +124,20 @@ class KeyrateStagingLoader:
             VALUES (%s, %s, %s)
         """
 
-        object_name = self._get_single_object_name()
+        self._clear_history(cur)
+        cur.executemany(insert_query, rows)
 
-        raw_bytes = self.storage.get(
-            bucket=self.bucket,
-            object_name=object_name
-        )
+        return self._get_metrics(cur)
 
-        data = self._parse_raw_bytes(raw_bytes)
 
-        with psycopg.connect(self.db_conn_str) as conn, conn.cursor() as cur:
-            self._clear_history(cur)
-            cur.executemany(insert_query, data)
-            metrics: StagingMetrics = self._get_metrics(cur)
+    def load(self) -> StagingMetrics:
+        rows = self.read_rows()
+
+        with (
+            psycopg.connect(self.db_conn_str) as conn,
+            conn.cursor() as cur,
+        ):
+            metrics = self.write_rows(cur, rows)
 
         return metrics
 
@@ -159,7 +178,52 @@ class RgbiStagingLoader:
             records_loaded=records_loaded
         )
 
-    def load(self) -> StagingMetrics:
+
+    def read_rows(self) -> list[tuple[int, Any, Any, Any]]:
+        rows: list[tuple[int, Any, Any, Any]] = []
+
+        for object_name in self.storage.list_objects(
+            bucket=self.bucket,
+            prefix=f"{self.prefix.rstrip('/')}/"
+        ):
+            if not object_name.endswith('.json'):
+                continue
+
+            raw_bytes = self.storage.get(
+                bucket=self.bucket,
+                object_name=object_name
+            )
+
+            page = json.loads(raw_bytes)
+
+            columns = page['history']['columns']
+            data = page['history']['data']
+
+            date_idx = columns.index(FLD_TRADE_DATE)
+            close_idx = columns.index(FLD_CLOSE)
+            currency_idx = columns.index(FLD_CURRENCY)
+
+            if not data:
+                raise ValueError('history.data is empty')
+
+            rows.extend(
+                (
+                    self.run_id,
+                    row[date_idx],
+                    row[close_idx],
+                    row[currency_idx]
+                )
+                for row in data
+            )
+
+        return rows
+
+
+    def write_rows(
+        self,
+        cur: psycopg.Cursor,
+        rows: list[tuple[int, Any, Any, Any]],
+    ) -> StagingMetrics:
         insert_query = """
             INSERT INTO stg.rgbi_history (
                 run_id, 
@@ -169,46 +233,21 @@ class RgbiStagingLoader:
             VALUES (%s, %s, %s, %s)
         """
 
-        with psycopg.connect(self.db_conn_str) as conn, conn.cursor() as cur:
+        self._clear_history(cur)
 
-            self._clear_history(cur)
+        if rows:
+            cur.executemany(insert_query, rows)
 
-            for object_name in self.storage.list_objects(
-                bucket=self.bucket,
-                prefix=f"{self.prefix.rstrip('/')}/"
-            ):
-                if not object_name.endswith('.json'):
-                    continue
+        return self._get_metrics(cur)
 
-                raw_bytes = self.storage.get(
-                    bucket=self.bucket,
-                    object_name=object_name
-                )
 
-                page = json.loads(raw_bytes)
+    def load(self) -> StagingMetrics:
+        rows = self.read_rows()
 
-                columns = page['history']['columns']
-                data = page['history']['data']
-
-                date_idx = columns.index(FLD_TRADE_DATE)
-                close_idx = columns.index(FLD_CLOSE)
-                currency_idx = columns.index(FLD_CURRENCY)
-
-                if not data:
-                    raise ValueError('history.data is empty')
-
-                rows = [
-                    (
-                        self.run_id,
-                        row[date_idx],
-                        row[close_idx],
-                        row[currency_idx]
-                    )
-                    for row in data
-                ] 
-
-                cur.executemany(insert_query, rows)
-
-            metrics: StagingMetrics = self._get_metrics(cur)
+        with (
+            psycopg.connect(self.db_conn_str) as conn,
+            conn.cursor() as cur,
+        ):
+            metrics = self.write_rows(cur, rows)
 
         return metrics

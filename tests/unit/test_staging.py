@@ -124,10 +124,10 @@ def test_keyrate_parse_raw_bytes_returns_rows(
 
     result = loader._parse_raw_bytes(raw)
 
-    assert result == (
+    assert result == [
         (RUN_ID, '01.01.2026', '16.00'),
-        (RUN_ID, '02.01.2026', '16.50')
-    )
+        (RUN_ID, '02.01.2026', '16.50'),
+    ]
 
 def test_keyrate_parse_raw_bytes_raises_when_table_tag_missing(
     storage
@@ -249,10 +249,10 @@ def test_keyrate_load_reads_objects_and_inserts_rows(
 
     inserted_rows = cursor.executemany.call_args.args[1]
 
-    assert inserted_rows == (
+    assert inserted_rows == [
         (RUN_ID, '01.01.2026', '16.00'),
-        (RUN_ID, '02.01.2026', '16.50')
-    )
+        (RUN_ID, '02.01.2026', '16.50'),
+    ]
 
     assert result.run_id == RUN_ID
     assert result.records_loaded == 2
