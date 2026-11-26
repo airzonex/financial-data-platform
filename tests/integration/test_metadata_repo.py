@@ -1046,3 +1046,109 @@ def test_complete_staging_is_atomic(fail_after_write: bool) -> None:
                 "DELETE FROM metadata.pipeline_runs WHERE id = %s",
                 (pipeline_id,),
             )
+
+
+def test_complete_staging_rejects_stale_attempt() -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline = repo.get_or_create_pipeline_run(
+        APP_PIPELINE_NAME,
+        f"test-staging-stale-attempt-{uuid4()}",
+    )
+    pipeline_id = pipeline.pipeline_run_id
+
+    try:
+        dataset = repo.prepare_dataset_run(pipeline_id, "keyrate")
+
+        first_claim = repo.claim_pipeline_step(
+            pipeline_run_id=pipeline_id,
+            step_name="staging_keyrate",
+            step_type="staging",
+        )
+        assert first_claim.attempt_id is not None
+
+        repo.finish_claimed_step(
+            step_id=first_claim.step_id,
+            attempt_id=first_claim.attempt_id,
+            status="error",
+            error="Simulated first-attempt failure",
+        )
+
+        second_claim = repo.claim_pipeline_step(
+            pipeline_run_id=pipeline_id,
+            step_name="staging_keyrate",
+            step_type="staging",
+        )
+        assert second_claim.attempt_id is not None
+        assert second_claim.step_id == first_claim.step_id
+        assert second_claim.attempt_id != first_claim.attempt_id
+
+        write_rows = Mock(
+            side_effect=AssertionError(
+                "A stale attempt must not execute the writer"
+            )
+        )
+
+        with pytest.raises(ValueError, match="not running under attempt"):
+            repo.complete_staging(
+                step_id=first_claim.step_id,
+                attempt_id=first_claim.attempt_id,
+                dataset_run_id=dataset.run_id,
+                write_rows=write_rows,
+            )
+
+        write_rows.assert_not_called()
+
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            step = conn.execute(
+                """
+                SELECT status,
+                       attempt_id,
+                       attempt_count,
+                       records_out,
+                       finished_at,
+                       error
+                FROM metadata.pipeline_steps
+                WHERE id = %s
+                """,
+                (second_claim.step_id,),
+            ).fetchone()
+
+            dataset_metrics = conn.execute(
+                """
+                SELECT records_loaded
+                FROM metadata.dataset_runs
+                WHERE id = %s
+                """,
+                (dataset.run_id,),
+            ).fetchone()
+
+        assert step == (
+            "running",
+            second_claim.attempt_id,
+            2,
+            None,
+            None,
+            None,
+        )
+        assert dataset_metrics == (None,)
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            conn.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                "DELETE FROM metadata.pipeline_runs WHERE id = %s",
+                (pipeline_id,),
+            )
