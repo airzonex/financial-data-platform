@@ -1112,3 +1112,56 @@ class MetadataRepository:
                 raise ValueError("Staging attempt could not be completed")
 
         return result
+
+
+    def get_completed_staging(
+        self,
+        dataset_run_id: int,
+    ) -> StagingMetrics:
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT d.records_loaded,
+                       s.status,
+                       s.records_out
+                FROM metadata.dataset_runs d
+                LEFT JOIN metadata.pipeline_steps s
+                  ON s.pipeline_run_id = d.pipeline_run_id
+                 AND s.step_name = 'staging_' || d.dataset
+                 AND s.step_type = 'staging'
+                WHERE d.id = %s
+                """,
+                (dataset_run_id,),
+            )
+            row = cur.fetchone()
+
+        if row is None:
+            raise ValueError(
+                f"Dataset run {dataset_run_id} does not exist"
+            )
+
+        records_loaded, status, records_out = row
+
+        if status != "success":
+            raise ValueError(
+                f"Staging has not succeeded for dataset run "
+                f"{dataset_run_id}"
+            )
+
+        if (
+            records_loaded is None
+            or records_loaded <= 0
+            or records_loaded != records_out
+        ):
+            raise ValueError(
+                f"Inconsistent staging metrics for dataset run "
+                f"{dataset_run_id}"
+            )
+
+        return StagingMetrics(
+            run_id=dataset_run_id,
+            records_loaded=records_loaded,
+        )

@@ -2,9 +2,12 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 import httpx
+import psycopg
 
 from financial_data.config import (
     KEYRATE_DATASET,
@@ -145,60 +148,98 @@ def stage_dataset(
     connection_str = settings.database_conninfo()
     repository = MetadataRepository(connection_str)
 
-    # this lookup also checks that both runs are still running
-    pipeline, dataset_run = repository.get_ingestion_context(dataset_run_id)
-    ingestion = repository.get_staging_input(dataset_run_id)
-
-    loader_class: type[KeyrateStagingLoader | RgbiStagingLoader]
-
-    if dataset_run.dataset == KEYRATE_DATASET:
-        loader_class = KeyrateStagingLoader
-    elif dataset_run.dataset == RGBI_DATASET:
-        loader_class = RgbiStagingLoader
-    else:
-        raise ValueError(f"Unsupported dataset {dataset_run_id}")
-
-    loader = loader_class(
-        run_id=dataset_run_id,
-        storage=settings.create_storage(),
-        bucket=ingestion.bucket,
-        prefix=ingestion.objects_prefix,
-        db_conn_str=connection_str,
+    pipeline, dataset_run = repository.get_ingestion_context(
+        dataset_run_id,
+        allow_completed=True,
     )
 
-    step_id = repository.start_pipeline_step(
+    if dataset_run.dataset not in (KEYRATE_DATASET, RGBI_DATASET):
+        raise ValueError(
+            f"Unsupported dataset: {dataset_run.dataset}"
+        )
+
+    claim = repository.claim_pipeline_step(
         pipeline_run_id=pipeline.pipeline_run_id,
         step_name=f"staging_{dataset_run.dataset}",
         step_type="staging",
     )
 
-    try:
+    if claim.already_completed:
+        result = repository.get_completed_staging(dataset_run_id)
+
         logger.info(
-            "Starting staging: dataset=%s dataset_run_id=%s",
-            dataset_run.dataset,
+            "Reusing completer staging: dataset_run_id=%s",
             dataset_run_id,
         )
 
-        result = loader.load()
+        return result
 
-        if result.records_loaded <= 0:
-            raise ValueError(f"No staging rows loaded for dataset run {dataset_run_id}")
+    attempt_id = claim.attempt_id
 
-        repository.add_staging_metrics(result)
-        repository.finish_pipeline_step(
-            step_id=step_id,
-            status="success",
-            records_out=result.records_loaded,
+    if attempt_id is None:
+        raise RuntimeError(
+            "An executable claim must have an attempt ID"
         )
+
+    try:
+        ingestion = repository.get_staging_input(dataset_run_id)
+        storage = settings.create_storage()
+
+        logger.info(
+            "Starting staging: dataset=%s dataset_run_id=%s attempt_id=%s",
+            dataset_run.dataset,
+            dataset_run_id,
+            attempt_id,
+        )
+
+        writer: Callable[[psycopg.Cursor], StagingMetrics]
+
+        if dataset_run.dataset == KEYRATE_DATASET:
+            keyrate_loader = KeyrateStagingLoader(
+                run_id=dataset_run_id,
+                storage=storage,
+                bucket=ingestion.bucket,
+                prefix=ingestion.objects_prefix,
+                db_conn_str=connection_str,
+            )
+            keyrate_rows = keyrate_loader.read_rows()
+            writer = partial(
+                keyrate_loader.write_rows,
+                rows=keyrate_rows,
+            )
+        else:
+            rgbi_loader = RgbiStagingLoader(
+                run_id=dataset_run_id,
+                storage=storage,
+                bucket=ingestion.bucket,
+                prefix=ingestion.objects_prefix,
+                db_conn_str=connection_str,
+            )
+            rgbi_rows = rgbi_loader.read_rows()
+            writer = partial(
+                rgbi_loader.write_rows,
+                rows=rgbi_rows,
+            )
+
+        result = repository.complete_staging(
+            step_id=claim.step_id,
+            attempt_id=attempt_id,
+            dataset_run_id=dataset_run_id,
+            write_rows=writer,
+        )
+
     except Exception as exc:
         try:
-            repository.finish_pipeline_step(
-                step_id=step_id,
+            repository.finish_claimed_step(
+                step_id=claim.step_id,
+                attempt_id=attempt_id,
                 status="error",
                 error=str(exc),
             )
         except Exception:
-            logger.exception("Could not record staging failure")
+            logger.exception(
+                "Could not record staging failure"
+            )
 
         raise
 
