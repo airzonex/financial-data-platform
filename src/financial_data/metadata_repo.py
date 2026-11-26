@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
@@ -984,3 +985,130 @@ class MetadataRepository:
                     f"Dataset run {result.run_id} does not match "
                     f"running ingestion step {step_id}"
                 )
+
+
+    def complete_staging(
+        self,
+        step_id: int,
+        attempt_id: UUID,
+        dataset_run_id: int,
+        write_rows: Callable[[psycopg.Cursor], StagingMetrics],
+    ) -> StagingMetrics:
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            # follow the same lock order as step claiming:
+            # pipeline first, then step
+            cur.execute(
+                """
+                SELECT p.id, p.pipeline_name, p.status
+                FROM metadata.pipeline_runs p
+                WHERE p.id = (
+                    SELECT pipeline_run_id
+                    FROM metadata.pipeline_steps
+                    WHERE id = %s
+                )
+                FOR UPDATE OF p
+                """,
+                (step_id,),
+            )
+            pipeline = cur.fetchone()
+
+            if pipeline is None:
+                raise ValueError(f"Step {step_id} does not exist")
+
+            pipeline_id, pipeline_name, pipeline_status = pipeline
+
+            if (
+                pipeline_name != PIPELINE_NAME
+                or pipeline_status != "running"
+            ):
+                raise ValueError("Expected a running financial pipeline")
+
+            cur.execute(
+                """
+                SELECT step_name, step_type, status, attempt_id
+                FROM metadata.pipeline_steps
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (step_id,),
+            )
+            step = cur.fetchone()
+
+            if (
+                step is None
+                or step[1] != "staging"
+                or step[2] != "running"
+                or step[3] != attempt_id
+            ):
+                raise ValueError(
+                    f"Staging step {step_id} is not running "
+                    f"under attempt {attempt_id}"
+                )
+
+            cur.execute(
+                """
+                SELECT dataset, status
+                FROM metadata.dataset_runs
+                WHERE id = %s
+                  AND pipeline_run_id = %s
+                FOR UPDATE
+                """,
+                (dataset_run_id, pipeline_id),
+            )
+            dataset = cur.fetchone()
+
+            if (
+                dataset is None
+                or dataset[1] != "running"
+                or step[0] != f"staging_{dataset[0]}"
+            ):
+                raise ValueError(
+                    f"Dataset run {dataset_run_id} does not match "
+                    f"running staging step {step_id}"
+                )
+
+            # ownership has been validated and locked before any row writes
+            result = write_rows(cur)
+
+            if result.run_id != dataset_run_id:
+                raise ValueError("Staging result has an unexpected run ID")
+
+            if result.records_loaded <= 0:
+                raise ValueError("No staging rows loaded")
+
+            cur.execute(
+                """
+                UPDATE metadata.dataset_runs
+                SET records_loaded = %s
+                WHERE id = %s
+                """,
+                (result.records_loaded, dataset_run_id),
+            )
+
+            if cur.rowcount != 1:
+                raise ValueError(
+                    f"Staging metadata could not be updated "
+                    f"for dataset run {dataset_run_id}"
+                )
+
+            cur.execute(
+                """
+                UPDATE metadata.pipeline_steps
+                SET status = 'success',
+                    records_out = %s,
+                    finished_at = now(),
+                    error = NULL
+                WHERE id = %s
+                  AND attempt_id = %s
+                  AND status = 'running'
+                """,
+                (result.records_loaded, step_id, attempt_id),
+            )
+
+            if cur.rowcount != 1:
+                raise ValueError("Staging attempt could not be completed")
+
+        return result

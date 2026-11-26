@@ -9,11 +9,13 @@ import psycopg
 import pytest
 from config import TEST_DB_CONN_STR
 
+from financial_data.config import PIPELINE_NAME as APP_PIPELINE_NAME
 from financial_data.ingestion import IngestionMetrics
 from financial_data.jobs import ingest_dataset
 from financial_data.metadata_repo import MetadataRepository, PipelineInfo
 from financial_data.runtime import RuntimeSettings
-from financial_data.staging import StagingMetrics
+from financial_data.staging import KeyrateStagingLoader, StagingMetrics
+from financial_data.storage import MinioStorage
 
 PIPELINE_NAME = 'financial_test'
 
@@ -899,6 +901,133 @@ def test_ingestion_job_retries_failed_attempt() -> None:
 
     finally:
         with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            conn.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                "DELETE FROM metadata.pipeline_runs WHERE id = %s",
+                (pipeline_id,),
+            )
+
+
+@pytest.mark.parametrize("fail_after_write", [False, True])
+def test_complete_staging_is_atomic(fail_after_write: bool) -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline = repo.get_or_create_pipeline_run(
+        APP_PIPELINE_NAME,
+        f"test-staging-atomic-{uuid4()}"
+    )
+    pipeline_id = pipeline.pipeline_run_id
+    dataset_id = None
+
+    try:
+        dataset = repo.prepare_dataset_run(pipeline_id, "keyrate")
+        dataset_id = dataset.run_id
+
+        claim = repo.claim_pipeline_step(
+            pipeline_id,
+            "staging_keyrate",
+            "staging",
+        )
+        assert claim.attempt_id is not None
+
+        # existing rows must survive if replacement fails
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            conn.execute(
+                """
+                INSERT INTO stg.keyrate_history
+                    (run_id, trade_date, keyrate)
+                VALUES (%s, '01.01.2026', '16.00')
+                """,
+                (dataset_id,),
+            )
+
+        loader = KeyrateStagingLoader(
+            run_id=dataset_id,
+            storage=Mock(spec=MinioStorage),
+            bucket="raw",
+            prefix="test",
+            db_conn_str=TEST_DB_CONN_STR,
+        )
+        rows = [(dataset_id, "02.01.2026", "16.50")]
+
+        def write_rows(cur):
+            result = loader.write_rows(cur, rows)
+
+            if fail_after_write:
+                raise RuntimeError("Failure after staging write")
+
+            return result
+
+        if fail_after_write:
+            with pytest.raises(
+                RuntimeError,
+                match="Failure after staging write"
+            ):
+                repo.complete_staging(
+                    claim.step_id,
+                    claim.attempt_id,
+                    dataset_id,
+                    write_rows,
+                )
+
+        else:
+            result = repo.complete_staging(
+                claim.step_id,
+                claim.attempt_id,
+                dataset_id,
+                write_rows,
+            )
+            assert result.records_loaded == 1
+
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            stored_rows = conn.execute(
+                """
+                SELECT trade_date, keyrate
+                FROM stg.keyrate_history
+                WHERE run_id = %s
+                """,
+                (dataset_id,),
+            ).fetchall()
+
+            metadata = conn.execute(
+                """
+                SELECT d.records_loaded, s.status, s.records_out
+                FROM metadata.dataset_runs d
+                JOIN metadata.pipeline_steps s
+                  ON d.pipeline_run_id = s.pipeline_run_id
+                 AND s.step_name = 'staging_keyrate'
+                WHERE d.id = %s
+                """,
+                (dataset_id,),
+            ).fetchone()
+
+        if fail_after_write:
+            assert stored_rows == [("01.01.2026", "16.00")]
+            assert metadata == (None, "running", None)
+        else:
+            assert stored_rows == [("02.01.2026", "16.50")]
+            assert metadata == (1, "success", 1)
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            if dataset_id is not None:
+                conn.execute(
+                    "DELETE FROM stg.keyrate_history WHERE run_id = %s",
+                    (dataset_id,),
+                )
+
             conn.execute(
                 """
                 DELETE FROM metadata.pipeline_steps
