@@ -11,7 +11,7 @@ from config import TEST_DB_CONN_STR
 
 from financial_data.config import PIPELINE_NAME as APP_PIPELINE_NAME
 from financial_data.ingestion import IngestionMetrics
-from financial_data.jobs import ingest_dataset
+from financial_data.jobs import ingest_dataset, stage_dataset
 from financial_data.metadata_repo import MetadataRepository, PipelineInfo
 from financial_data.runtime import RuntimeSettings
 from financial_data.staging import KeyrateStagingLoader, StagingMetrics
@@ -1152,3 +1152,214 @@ def test_complete_staging_rejects_stale_attempt() -> None:
                 "DELETE FROM metadata.pipeline_runs WHERE id = %s",
                 (pipeline_id,),
             )
+
+
+def test_staging_job_retries_failed_attempt() -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline = repo.get_or_create_pipeline_run(
+        APP_PIPELINE_NAME,
+        f"test-staging-job-retry-{uuid4()}",
+    )
+    pipeline_id = pipeline.pipeline_run_id
+    dataset_id = None
+
+    try:
+        dataset = repo.prepare_dataset_run(pipeline_id, "keyrate")
+        dataset_id = dataset.run_id
+        prefix = f"test/keyrate/run_id={dataset_id}"
+
+        # set up a successfully completed ingestion
+        ingestion_claim = repo.claim_pipeline_step(
+            pipeline_run_id=pipeline_id,
+            step_name="ingestion_keyrate",
+            step_type="ingestion",
+        )
+        assert ingestion_claim.attempt_id is not None
+
+        repo.complete_ingestion(
+            step_id=ingestion_claim.step_id,
+            attempt_id=ingestion_claim.attempt_id,
+            result=IngestionMetrics(
+                run_id=dataset_id,
+                bucket="raw",
+                objects_prefix=prefix,
+                objects_saved=1,
+            )
+        )
+
+        storage = Mock(spec=MinioStorage)
+
+        # each attempt needs a fresh iterator
+        storage.list_objects.side_effect = lambda **kwargs: iter(
+            [f"{prefix}/part-0000.html"]
+        )
+        storage.get.return_value = b"""
+            <table>
+                <tr><th>Date</th><th>Key Rate</th></tr>
+                <tr><td>01.01.2026</td><td>16.00</td></tr>
+                <tr><td>02.01.2026</td><td>16.50</td></tr>
+            </table>
+        """
+
+        settings = Mock(spec=RuntimeSettings)
+        settings.database_conninfo.return_value = TEST_DB_CONN_STR
+        settings.create_storage.return_value = storage
+
+        original_write_rows = KeyrateStagingLoader.write_rows
+
+        def write_then_fail(loader, cur, rows):
+            original_write_rows(loader, cur, rows)
+            raise RuntimeError("Simulate failure after staging write")
+
+        # first attempt: actual inserts happen, then the transaction fails
+        with patch.object(
+            KeyrateStagingLoader,
+            "write_rows",
+            new=write_then_fail,
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Simulate failure after staging write",
+            ):
+                stage_dataset(dataset_id, settings)
+
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            failed_step = conn.execute(
+                """
+                SELECT status, attempt_id, attempt_count, error
+                FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                  AND step_name = 'staging_keyrate'
+                """,
+                (pipeline_id,),
+            ).fetchone()
+
+            stored_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM stg.keyrate_history
+                WHERE run_id = %s
+                """,
+                (dataset_id,),
+            ).fetchone()
+
+            dataset_metrics = conn.execute(
+                """
+                SELECT records_loaded
+                FROM metadata.dataset_runs
+                WHERE id = %s
+                """,
+                (dataset_id,),
+            ).fetchone()
+
+        assert failed_step is not None
+        assert failed_step[0] == "error"
+        assert failed_step[1] is not None
+        assert failed_step[2] == 1
+        assert "Simulate failure after staging write" in failed_step[3]
+        assert stored_count == (0,)
+        assert dataset_metrics == (None,)
+
+        # second attempt: the original writer is restored
+        result = stage_dataset(dataset_id, settings)
+
+        assert result == StagingMetrics(
+            run_id=dataset_id,
+            records_loaded=2,
+        )
+        assert repo.get_completed_staging(dataset_id) == result
+
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            completed_step = conn.execute(
+                """
+                SELECT status, attempt_id, attempt_count,
+                       records_out, finished_at, error
+                FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                  AND step_name = 'staging_keyrate'
+                """,
+                (pipeline_id,),
+            ).fetchone()
+
+            stored_rows = conn.execute(
+                """
+                SELECT trade_date, keyrate
+                FROM stg.keyrate_history
+                WHERE run_id = %s
+                """,
+                (dataset_id,)
+            ).fetchall()
+
+        assert completed_step is not None
+        assert completed_step[0] == "success"
+        assert completed_step[1] != failed_step[1]
+        assert completed_step[2] == 2
+        assert completed_step[3] == 2
+        assert completed_step[4] is not None
+        assert completed_step[5] is None
+
+        assert stored_rows == [
+            ("01.01.2026", "16.00"),
+            ("02.01.2026", "16.50"),
+        ]
+
+        # third call: reuse the saved result without reading or writing
+        storage.reset_mock()
+        settings.create_storage.reset_mock()
+
+        with patch.object(
+            KeyrateStagingLoader,
+            "write_rows",
+            side_effect=AssertionError(
+                "Completed staging must not write again"
+            ),
+        ) as writer:
+            repeated_result = stage_dataset(dataset_id, settings)
+
+        assert repeated_result == result
+        settings.create_storage.assert_not_called()
+        storage.list_objects.assert_not_called()
+        storage.get.assert_not_called()
+        writer.assert_not_called()
+
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            repeated_step = conn.execute(
+                """
+                SELECT status, attempt_id, attempt_count,
+                       records_out, finished_at, error
+                FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                  AND step_name = 'staging_keyrate'
+                """,
+                (pipeline_id,),
+            ).fetchone()
+
+            assert repeated_step == completed_step
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            if dataset_id is not None:
+                conn.execute(
+                    "DELETE FROM stg.keyrate_history WHERE run_id = %s",
+                    (dataset_id,),
+                )
+
+            conn.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                "DELETE FROM metadata.pipeline_runs WHERE id = %s",
+                (pipeline_id,),
+            )
+
