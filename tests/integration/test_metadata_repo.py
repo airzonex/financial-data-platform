@@ -1212,16 +1212,18 @@ def test_staging_job_retries_failed_attempt() -> None:
             raise RuntimeError("Simulate failure after staging write")
 
         # first attempt: actual inserts happen, then the transaction fails
-        with patch.object(
-            KeyrateStagingLoader,
-            "write_rows",
-            new=write_then_fail,
-        ):
-            with pytest.raises(
+        with (
+            patch.object(
+                KeyrateStagingLoader,
+                "write_rows",
+                new=write_then_fail,
+            ),
+            pytest.raises(
                 RuntimeError,
                 match="Simulate failure after staging write",
-            ):
-                stage_dataset(dataset_id, settings)
+            )
+        ):
+            stage_dataset(dataset_id, settings)
 
         with psycopg.connect(TEST_DB_CONN_STR) as conn:
             failed_step = conn.execute(
