@@ -1,6 +1,8 @@
+import subprocess
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from pathlib import Path
 from typing import Literal
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -1583,3 +1585,160 @@ def test_build_dbt_rejection_does_not_create_claim() -> None:
                     """,
                     (pipeline_id,),
                 )
+
+
+def test_build_dbt_retries_and_reuses_completed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+
+    settings = Mock(spec=RuntimeSettings)
+    settings.database_conninfo.return_value = TEST_DB_CONN_STR
+
+    # the subprocess is mocked; these files only satisfy existence checks
+    (tmp_path / "dbt_project.yml").write_text(
+        "name: financial_data\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "profiles.yml").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DBT_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("DBT_PROFILES_DIR", str(tmp_path))
+
+    pipeline = repo.get_or_create_pipeline_run(
+        APP_PIPELINE_NAME,
+        f"test-dbt-job-retry-{uuid4()}",
+    )
+    pipeline_id = pipeline.pipeline_run_id
+
+    try:
+        # construct metadata representing two successfully staged datasets
+        for dataset_name in ("rgbi", "keyrate"):
+            dataset = repo.prepare_dataset_run(
+                pipeline_id,
+                dataset_name,
+            )
+            repo.add_staging_metrics(
+                StagingMetrics(
+                    run_id=dataset.run_id,
+                    records_loaded=2,
+                )
+            )
+
+            staging_claim = repo.claim_pipeline_step(
+                pipeline_run_id=pipeline_id,
+                step_name=f"staging_{dataset_name}",
+                step_type="staging",
+            )
+            assert staging_claim.attempt_id is not None
+
+            repo.finish_claimed_step(
+                step_id=staging_claim.step_id,
+                attempt_id=staging_claim.attempt_id,
+                status="success",
+                records_out=2,
+            )
+
+        def read_build_step():
+            with psycopg.connect(TEST_DB_CONN_STR) as conn:
+                return conn.execute(
+                    """
+                    SELECT status, attempt_id, attempt_count,
+                           finished_at, error
+                    FROM metadata.pipeline_steps
+                    WHERE pipeline_run_id = %s
+                      AND step_name = 'dbt_build'
+                    """,
+                    (pipeline_id,),
+                ).fetchone()
+
+        executions = 0
+
+        def simulate_dbt(command, **kwargs):
+            nonlocal executions
+            executions += 1
+
+            # another session must not acquire the lock during execution
+            with (
+                pytest.raises(DbtBuildBusyError),
+                dbt_build_lock(TEST_DB_CONN_STR),
+            ):
+                pytest.fail("Build executed without holding the lock")
+
+            if executions == 1:
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=command,
+                )
+
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+            )
+
+        with patch(
+            "financial_data.jobs.subprocess.run",
+            side_effect=simulate_dbt,
+        ) as run:
+            # first attempt fails
+            with pytest.raises(subprocess.CalledProcessError):
+                build_dbt(pipeline_id, settings)
+
+            failed_step = read_build_step()
+
+            assert failed_step is not None
+            assert failed_step[0] == "error"
+            assert failed_step[1] is not None
+            assert failed_step[2] == 1
+            assert failed_step[3] is not None
+            assert failed_step[4]
+
+            # the lock must be released after failure
+            with dbt_build_lock(TEST_DB_CONN_STR):
+                pass
+
+            # the same pipeline can retry its own failed build
+            build_dbt(pipeline_id, settings)
+
+            completed_step = read_build_step()
+
+            assert completed_step is not None
+            assert completed_step[0] == "success"
+            assert completed_step[1] != failed_step[1]
+            assert completed_step[2] == 2
+            assert completed_step[3] is not None
+            assert completed_step[4] is None
+
+            # a repeat returns without launching dbt again
+            build_dbt(pipeline_id, settings)
+
+            assert run.call_count == 2
+            assert read_build_step() == completed_step
+
+        # successful execution and completed-result reuse also release it
+        with dbt_build_lock(TEST_DB_CONN_STR):
+            pass
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            conn.execute(
+                """
+                DELETE FROM metadata.pipeline_steps
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                """
+                DELETE FROM metadata.dataset_runs
+                WHERE pipeline_run_id = %s
+                """,
+                (pipeline_id,),
+            )
+            conn.execute(
+                "DELETE FROM metadata.pipeline_runs WHERE id = %s",
+                (pipeline_id,),
+            )
