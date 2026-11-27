@@ -11,7 +11,8 @@ from config import TEST_DB_CONN_STR
 
 from financial_data.config import PIPELINE_NAME as APP_PIPELINE_NAME
 from financial_data.ingestion import IngestionMetrics
-from financial_data.jobs import ingest_dataset, stage_dataset
+from financial_data.jobs import build_dbt, ingest_dataset, stage_dataset
+from financial_data.locking import DbtBuildBusyError, dbt_build_lock
 from financial_data.metadata_repo import MetadataRepository, PipelineInfo
 from financial_data.runtime import RuntimeSettings
 from financial_data.staging import KeyrateStagingLoader, StagingMetrics
@@ -1451,6 +1452,119 @@ def test_unfinalized_dbt_build_blocks_other_pipeline(
         repo.require_no_other_unfinalized_dbt_build(
             second.pipeline_run_id
         )
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            for pipeline_id in pipeline_ids:
+                conn.execute(
+                    """
+                    DELETE FROM metadata.pipeline_steps
+                    WHERE pipeline_run_id = %s
+                    """,
+                    (pipeline_id,),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM metadata.pipeline_runs
+                    WHERE id = %s
+                    """,
+                    (pipeline_id,),
+                )
+
+
+def test_build_dbt_rejection_does_not_create_claim() -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline_ids: list[int] = []
+
+    settings = Mock(spec=RuntimeSettings)
+    settings.database_conninfo.return_value = TEST_DB_CONN_STR
+
+    try:
+        owner = repo.get_or_create_pipeline_run(
+            APP_PIPELINE_NAME,
+            f"test-dbt-owner-{uuid4()}",
+        )
+        pipeline_ids.append(owner.pipeline_run_id)
+
+        contender = repo.get_or_create_pipeline_run(
+            APP_PIPELINE_NAME,
+            f"test-dbt-contender-{uuid4()}",
+        )
+        pipeline_ids.append(contender.pipeline_run_id)
+
+        def assert_contender_has_no_claim() -> None:
+            with psycopg.connect(TEST_DB_CONN_STR) as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM metadata.pipeline_steps
+                    WHERE pipeline_run_id = %s
+                      AND step_name = 'dbt_build'
+                    """,
+                    (contender.pipeline_run_id,),
+                ).fetchone()
+
+            assert row == (0,)
+
+        with patch("financial_data.jobs.subprocess.run") as run:
+            #another real database session holds the shared lock
+            with (
+                dbt_build_lock(TEST_DB_CONN_STR),
+                pytest.raises(DbtBuildBusyError),
+            ):
+                build_dbt(contender.pipeline_run_id, settings)
+
+            assert_contender_has_no_claim()
+            run.assert_not_called()
+
+            # the lock is now free, but the owner has a failed build
+            claim = repo.claim_pipeline_step(
+                pipeline_run_id=owner.pipeline_run_id,
+                step_name="dbt_build",
+                step_type="transformation",
+            )
+            assert claim.attempt_id is not None
+
+            repo.finish_claimed_step(
+                step_id=claim.step_id,
+                attempt_id=claim.attempt_id,
+                status="error",
+                error="Simulated owner build failure",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match="unfinalized dbt build",
+            ):
+                build_dbt(contender.pipeline_run_id, settings)
+
+            assert_contender_has_no_claim()
+            run.assert_not_called()
+
+            # the rejected call must release its advisory lock
+            with dbt_build_lock(TEST_DB_CONN_STR):
+                # no phantom claim from the contender blocks the owner
+                repo.require_no_other_unfinalized_dbt_build(
+                    owner.pipeline_run_id
+                )
+
+            # rejection must not change the owner's failed attempt
+            with psycopg.connect(TEST_DB_CONN_STR) as conn:
+                owner_step = conn.execute(
+                    """
+                    SELECT status, attempt_id, attempt_count, error
+                    FROM metadata.pipeline_steps
+                    WHERE id = %s
+                    """,
+                    (claim.step_id,),
+                ).fetchone()
+
+            assert owner_step == (
+                "error",
+                claim.attempt_id,
+                1,
+                "Simulated owner build failure",
+            )
 
     finally:
         with psycopg.connect(TEST_DB_CONN_STR) as conn:
