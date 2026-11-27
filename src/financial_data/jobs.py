@@ -168,7 +168,7 @@ def stage_dataset(
         result = repository.get_completed_staging(dataset_run_id)
 
         logger.info(
-            "Reusing completer staging: dataset_run_id=%s",
+            "Reusing completed staging: dataset_run_id=%s",
             dataset_run_id,
         )
 
