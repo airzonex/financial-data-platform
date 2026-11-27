@@ -21,6 +21,7 @@ from financial_data.ingestion import (
     IngestionMetrics,
     MoexRgbiIngestion,
 )
+from financial_data.locking import dbt_build_lock
 from financial_data.metadata_repo import MetadataRepository
 from financial_data.runtime import RuntimeSettings
 from financial_data.sources import CbrClient, MoexClient
@@ -252,7 +253,7 @@ def stage_dataset(
     return result
 
 
-def build_dbt(
+def _build_dbt_claimed(
     pipeline_run_id: int,
     settings: RuntimeSettings,
 ) -> None:
@@ -336,13 +337,32 @@ def build_dbt(
     )
 
 
+def build_dbt(
+    pipeline_run_id: int,
+    settings: RuntimeSettings,
+) -> None:
+    connection_str = settings.database_conninfo()
+    repository = MetadataRepository(connection_str)
+
+    with dbt_build_lock(connection_str):
+        repository.require_no_other_unfinalized_dbt_build(
+            pipeline_run_id
+        )
+
+        _build_dbt_claimed(pipeline_run_id, settings)
+
+
 def finalize_pipeline(
     pipeline_run_id: int,
     settings: RuntimeSettings,
 ) -> dict[str, str]:
-    repository = MetadataRepository(settings.database_conninfo())
+    connection_str = settings.database_conninfo()
+    repository = MetadataRepository(connection_str)
 
-    watermarks = repository.finalize_successful_pipeline(pipeline_run_id)
+    with dbt_build_lock(connection_str):
+        watermarks = repository.finalize_successful_pipeline(
+            pipeline_run_id
+        )
 
     logger.info(
         "Pipeline finalized: pipeline_run_id=%s",

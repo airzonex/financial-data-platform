@@ -13,6 +13,7 @@ from financial_data.jobs import (
     ingest_dataset,
     stage_dataset,
 )
+from financial_data.locking import DbtBuildBusyError
 from financial_data.metadata_repo import (
     DatasetRunInfo,
     PipelineInfo,
@@ -104,6 +105,7 @@ def test_build_dbt_reuses_completed_step() -> None:
     with(
         patch("financial_data.jobs.MetadataRepository") as repo_class,
         patch("financial_data.jobs.subprocess.run") as run,
+        patch("financial_data.jobs.dbt_build_lock"),
     ):
         repo = repo_class.return_value
         repo.claim_pipeline_step.return_value = StepClaim(
@@ -152,7 +154,8 @@ def test_build_dbt_records_attempt_result(
 
     with (
         patch("financial_data.jobs.MetadataRepository") as repo_class,
-        patch("financial_data.jobs.subprocess.run") as run
+        patch("financial_data.jobs.subprocess.run") as run,
+        patch("financial_data.jobs.dbt_build_lock"),
     ):
         repo = repo_class.return_value
         repo.claim_pipeline_step.return_value = StepClaim(
@@ -197,3 +200,54 @@ def test_build_dbt_records_attempt_result(
             stdout=sys.stderr,
             stderr=sys.stderr,
         )
+
+
+def test_build_dbt_does_not_claim_when_lock_is_busy() -> None:
+    settings = Mock(spec=RuntimeSettings)
+
+    with (
+        patch("financial_data.jobs.MetadataRepository") as repo_class,
+        patch("financial_data.jobs.dbt_build_lock") as lock,
+        patch("financial_data.jobs.subprocess.run") as run,
+    ):
+        repo = repo_class.return_value
+        lock.return_value.__enter__.side_effect = DbtBuildBusyError(
+            "Another financial dbt build holds the lock"
+        )
+
+        with pytest.raises(DbtBuildBusyError):
+            build_dbt(2, settings)
+
+        repo.require_no_other_unfinalized_dbt_build.assert_not_called()
+        repo.claim_pipeline_step.assert_not_called()
+        repo.finish_claimed_step.assert_not_called()
+        run.assert_not_called()
+
+
+def test_build_dbt_checks_unfinished_build_before_claiming() -> None:
+    settings = Mock(spec=RuntimeSettings)
+
+    with (
+        patch("financial_data.jobs.MetadataRepository") as repo_class,
+        patch("financial_data.jobs.dbt_build_lock") as lock,
+        patch("financial_data.jobs.subprocess.run") as run,
+    ):
+        repo = repo_class.return_value
+
+        def reject_unfinished_build(pipeline_run_id: int) -> None:
+            assert pipeline_run_id == 2
+            lock.return_value.__enter__.assert_called_once()
+            lock.return_value.__exit__.assert_not_called()
+            raise ValueError("Pipeline 1 has an unfinalized dbt build")
+
+        repo.require_no_other_unfinalized_dbt_build.side_effect = (
+            reject_unfinished_build
+        )
+
+        with pytest.raises(ValueError, match="unfinalized dbt build"):
+            build_dbt(2, settings)
+
+        repo.claim_pipeline_step.assert_not_called()
+        repo.finish_claimed_step.assert_not_called()
+        run.assert_not_called()
+        lock.return_value.__exit__.assert_called_once()
