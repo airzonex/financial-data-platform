@@ -256,29 +256,45 @@ def build_dbt(
     pipeline_run_id: int,
     settings: RuntimeSettings,
 ) -> None:
-    project_dir = Path(os.environ["DBT_PROJECT_DIR"])
-    profiles_dir = Path(os.environ["DBT_PROFILES_DIR"])
-
-    for required_file in (
-        project_dir / "dbt_project.yml",
-        profiles_dir / "profiles.yml",
-    ):
-        if not required_file.is_file():
-            raise FileNotFoundError(f"Missing dbt file {required_file}")
-
     repository = MetadataRepository(settings.database_conninfo())
-    repository.require_ready_for_dbt(pipeline_run_id)
 
-    step_id = repository.start_pipeline_step(
+    claim = repository.claim_pipeline_step(
         pipeline_run_id=pipeline_run_id,
         step_name="dbt_build",
         step_type="transformation",
     )
 
-    try:
+    if claim.already_completed:
         logger.info(
-            "Starting dbt build: pipeline_run_id=%s",
+            "Reusing completed dbt build: pipeline_run_id=%s",
             pipeline_run_id,
+        )
+        return
+
+    attempt_id = claim.attempt_id
+
+    if attempt_id is None:
+        raise RuntimeError(
+            "An executable claim must have an attempt ID"
+        )
+
+    try:
+        repository.require_ready_for_dbt(pipeline_run_id)
+
+        project_dir = Path(os.environ["DBT_PROJECT_DIR"])
+        profiles_dir = Path(os.environ["DBT_PROFILES_DIR"])
+
+        for required_file in (
+            project_dir / "dbt_project.yml",
+            profiles_dir / "profiles.yml",
+        ):
+            if not required_file.is_file():
+                raise FileNotFoundError(f"Missing dbt file {required_file}")
+
+        logger.info(
+            "Starting dbt build: pipeline_run_id=%s attempt_id=%s",
+            pipeline_run_id,
+            attempt_id,
         )
 
         subprocess.run(
@@ -295,14 +311,17 @@ def build_dbt(
             stderr=sys.stderr,
         )
 
-        repository.finish_pipeline_step(
-            step_id=step_id,
+        repository.finish_claimed_step(
+            step_id=claim.step_id,
+            attempt_id=attempt_id,
             status="success",
         )
+
     except Exception as exc:
         try:
-            repository.finish_pipeline_step(
-                step_id=step_id,
+            repository.finish_claimed_step(
+                step_id=claim.step_id,
+                attempt_id=attempt_id,
                 status="error",
                 error=str(exc),
             )

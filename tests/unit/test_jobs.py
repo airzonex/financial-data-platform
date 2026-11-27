@@ -1,10 +1,18 @@
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 import pytest
 
 from financial_data.ingestion import IngestionMetrics
-from financial_data.jobs import ingest_dataset, stage_dataset
+from financial_data.jobs import (
+    build_dbt,
+    ingest_dataset,
+    stage_dataset,
+)
 from financial_data.metadata_repo import (
     DatasetRunInfo,
     PipelineInfo,
@@ -88,3 +96,104 @@ def test_stage_dataset_reuses_completed_result(dataset: str) -> None:
         rgbi_loader.assert_not_called()
         repository.complete_staging.assert_not_called()
         repository.finish_claimed_step.assert_not_called()
+
+
+def test_build_dbt_reuses_completed_step() -> None:
+    settings = Mock(spec=RuntimeSettings)
+
+    with(
+        patch("financial_data.jobs.MetadataRepository") as repo_class,
+        patch("financial_data.jobs.subprocess.run") as run,
+    ):
+        repo = repo_class.return_value
+        repo.claim_pipeline_step.return_value = StepClaim(
+            step_id=10,
+            attempt_id=None,
+            already_completed=True,
+        )
+
+        build_dbt(1, settings)
+
+        repo.claim_pipeline_step.assert_called_once_with(
+            pipeline_run_id=1,
+            step_name="dbt_build",
+            step_type="transformation",
+        )
+        repo.require_ready_for_dbt.assert_not_called()
+        repo.finish_claimed_step.assert_not_called()
+        run.assert_not_called()
+
+
+@pytest.mark.parametrize("build_fails", [False, True])
+def test_build_dbt_records_attempt_result(
+    build_fails: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # only file existence is checked here; dbt itself is mocked
+    (tmp_path / "dbt_project.yml").write_text(
+        "name: financial_data\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "profiles.yml").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("DBT_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("DBT_PROFILES_DIR", str(tmp_path))
+
+    settings = Mock(spec=RuntimeSettings)
+    attempt_id = uuid4()
+    failure = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["dbt", "build"],
+    )
+
+    with (
+        patch("financial_data.jobs.MetadataRepository") as repo_class,
+        patch("financial_data.jobs.subprocess.run") as run
+    ):
+        repo = repo_class.return_value
+        repo.claim_pipeline_step.return_value = StepClaim(
+            step_id=10,
+            attempt_id=attempt_id,
+            already_completed=False,
+        )
+
+        if build_fails:
+            run.side_effect = failure
+
+            with pytest.raises(subprocess.CalledProcessError):
+                build_dbt(1, settings)
+
+            repo.finish_claimed_step.assert_called_once_with(
+                step_id=10,
+                attempt_id=attempt_id,
+                status="error",
+                error=str(failure),
+            )
+        else:
+            build_dbt(1, settings)
+
+            repo.finish_claimed_step.assert_called_once_with(
+                step_id=10,
+                attempt_id=attempt_id,
+                status="success",
+            )
+
+        repo.require_ready_for_dbt.assert_called_once_with(1)
+
+        run.assert_called_once_with(
+            [
+                "dbt",
+                "build",
+                "--project-dir",
+                str(tmp_path),
+                "--profiles-dir",
+                str(tmp_path),
+            ],
+            check=True,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        )
