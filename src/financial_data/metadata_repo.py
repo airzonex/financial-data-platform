@@ -1165,3 +1165,39 @@ class MetadataRepository:
             run_id=dataset_run_id,
             records_loaded=records_loaded,
         )
+
+
+    def require_no_other_unfinalized_dbt_build(
+        self,
+        pipeline_run_id: int,
+    ) -> None:
+        with (
+            psycopg.connect(self.connection_str) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                SELECT p.id, p.status, s.status
+                FROM metadata.pipeline_runs p
+                JOIN metadata.pipeline_steps s
+                  ON s.pipeline_run_id = p.id
+                WHERE p.pipeline_name = %s
+                  AND p.id <> %s
+                  AND p.status <> 'success'
+                  AND s.step_name = 'dbt_build'
+                  AND s.step_type = 'transformation'
+                ORDER BY p.id
+                LIMIT 1
+                """,
+                (PIPELINE_NAME, pipeline_run_id),
+            )
+            blocking_run = cur.fetchone()
+
+        if blocking_run is not None:
+            other_id, pipeline_status, step_status = blocking_run
+
+            raise ValueError(
+                f"Pipeline {other_id} has an unfinalized dbt build "
+                f"(pipeline={pipeline_status}, step={step_status}); "
+                "recover and finalize it before building another pipeline"
+            )

@@ -1365,3 +1365,107 @@ def test_staging_job_retries_failed_attempt() -> None:
                 (pipeline_id,),
             )
 
+
+@pytest.mark.parametrize(
+    "step_status",
+    ["running", "error", "success"],
+)
+def test_unfinalized_dbt_build_blocks_other_pipeline(
+    step_status: str,
+) -> None:
+    repo = MetadataRepository(TEST_DB_CONN_STR)
+    pipeline_ids: list[int] = []
+
+    try:
+        first = repo.get_or_create_pipeline_run(
+            APP_PIPELINE_NAME,
+            f"test-build-owner-{uuid4()}",
+        )
+        pipeline_ids.append(first.pipeline_run_id)
+
+        second = repo.get_or_create_pipeline_run(
+            APP_PIPELINE_NAME,
+            f"test-build-contender-{uuid4()}",
+        )
+        pipeline_ids.append(second.pipeline_run_id)
+
+        # a pipeline without a dbt step does not block another build
+        repo.require_no_other_unfinalized_dbt_build(
+            second.pipeline_run_id
+        )
+
+        claim = repo.claim_pipeline_step(
+            pipeline_run_id=first.pipeline_run_id,
+            step_name="dbt_build",
+            step_type="transformation",
+        )
+        assert claim.attempt_id is not None
+
+        if step_status == "error":
+            repo.finish_claimed_step(
+                step_id=claim.step_id,
+                attempt_id=claim.attempt_id,
+                status="error",
+                error="Simulated build failure",
+            )
+        elif step_status == "success":
+            repo.finish_claimed_step(
+                step_id=claim.step_id,
+                attempt_id=claim.attempt_id,
+                status="success",
+            )
+
+        # the owner can proceed with its own recovery
+        repo.require_no_other_unfinalized_dbt_build(
+            first.pipeline_run_id
+        )
+
+        # another pipeline must wait for recovery/finalization
+        with pytest.raises(ValueError, match="unfinalized dbt build"):
+            repo.require_no_other_unfinalized_dbt_build(
+                second.pipeline_run_id
+            )
+
+        # construct finalized metadata to test this guard's release
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            conn.execute(
+                """
+                UPDATE metadata.pipeline_steps
+                SET status = 'success',
+                    finished_at = now(),
+                    error = NULL
+                WHERE id = %s
+                """,
+                (claim.step_id,),
+            )
+            conn.execute(
+                """
+                UPDATE metadata.pipeline_runs
+                SET status = 'success',
+                    finished_at = now()
+                WHERE id = %s
+                """,
+                (first.pipeline_run_id,),
+            )
+
+        repo.require_no_other_unfinalized_dbt_build(
+            second.pipeline_run_id
+        )
+
+    finally:
+        with psycopg.connect(TEST_DB_CONN_STR) as conn:
+            for pipeline_id in pipeline_ids:
+                conn.execute(
+                    """
+                    DELETE FROM metadata.pipeline_steps
+                    WHERE pipeline_run_id = %s
+                    """,
+                    (pipeline_id,),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM metadata.pipeline_runs
+                    WHERE id = %s
+                    """,
+                    (pipeline_id,),
+                )
